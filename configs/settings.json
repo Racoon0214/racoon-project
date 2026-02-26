@@ -1,0 +1,56 @@
+{
+    "outputFont": {
+        "font": "\u5b8b\u4f53",
+        "size": 13,
+        "italic": false,
+        "bold": false,
+        "color": {
+            "R": 0,
+            "G": 0,
+            "B": 0
+        }
+    },
+    "subtitleFont": {
+        "font": "\u5b8b\u4f53",
+        "size": 35,
+        "italic": false,
+        "bold": true,
+        "color": {
+            "R": 217,
+            "G": 145,
+            "B": 0
+        }
+    },
+    "visual": {
+        "acc_thre": 0.6,
+        "target_id": 0,
+        "detectFalseCount_thre": 30,
+        "detectFalseCount_thre_time": 10,
+        "image_match_thre": 5,
+        "image_match_thre_time": 5,
+        "person_lost_thre": 30,
+        "person_lost_thre_time": 5
+    },
+    "voice": {
+        "BeiBei_text_count_thread": 18,
+        "plc": {
+            "ip": "172.22.18.111",
+            "port": 65432
+        }
+    },
+    "camera": {
+        "speed": 5,
+        "sleeptime": 1.2
+    },
+    "person_attributes": {
+        "enabled": false,
+        "model_dir": "best_model",
+        "update_interval": 150,
+        "threshold": 0.7,
+        "display": {
+            "show_color_patch": true,
+            "max_key_attributes": 3,
+            "auto_collapse": true
+        }
+    }
+}

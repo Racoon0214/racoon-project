@@ -1,0 +1,41 @@
+{
+    "outputFont": {
+        "font": "\u534e\u6587\u6977\u4f53",
+        "size": 12,
+        "italic": false,
+        "bold": false,
+        "color": {
+            "R": 0,
+            "G": 0,
+            "B": 0
+        }
+    },
+    "subtitleFont": {
+        "font": "\u5b8b\u4f53",
+        "size": 34,
+        "italic": false,
+        "bold": true,
+        "color": {
+            "R": 255,
+            "G": 255,
+            "B": 127
+        }
+    },
+    "visual": {
+        "acc_thre": 0.6,
+        "target_id": 0,
+        "detectFalseCount_thre": 30,
+        "detectFalseCount_thre_time": 10,
+        "image_match_thre": 10,
+        "image_match_thre_time": 5,
+        "person_lost_thre": 20,
+        "person_lost_thre_time": 5
+    },
+    "voice": {
+        "BeiBei_text_count_thread": 16
+    },
+    "camera": {
+        "speed": 3,
+        "sleeptime": 2.5
+    }
+}

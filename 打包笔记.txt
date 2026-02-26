@@ -1,0 +1,3 @@
+p1.。0face_recognition和@@@_models funasr  pvporcupine从环境里额外拎进去，要没有版本号的
+
+2.YOLOTra怕。00；；。；cker，weights，faces，SenseVoiceSmall lib configs拎出来，因为没改相对路径怕【
