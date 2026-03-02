@@ -851,8 +851,8 @@ class PlatForm(QMainWindow):
                 main_attrs = []
 
             # # 更新颜色标签
-            # if hasattr(self, 'color_label') and self.color_label:
-            #     self.color_label.setText(f"上衣颜色: {color}")
+            if hasattr(self, 'color_label') and self.color_label:
+                self.color_label.setText(f"上衣颜色: {color}")
 
             # 更新属性表格等...
             # 设置颜色标签的背景色（根据颜色名称）

@@ -49,27 +49,15 @@ class PersonAttributes:
         self.LABELS = list(self.LABEL_MAP.keys())  # 固定顺序的属性英文名列表
 
         # 2. 颜色范围定义 (HSV空间)
-        # self.COLOR_RANGES = {
-        #     "黑": ([0, 0, 0], [180, 255, 40]),
-        #     "白": ([0, 0, 180], [180, 40, 255]),
-        #     "紫": ([115, 20, 30], [165, 255, 255]),
-        #     "红1": ([0, 43, 46], [10, 255, 255]),
-        #     "红2": ([156, 43, 46], [180, 255, 255]),
-        #     "绿": ([35, 43, 46], [77, 255, 255]),
-        #     "蓝": ([90, 43, 46], [115, 255, 255]),
-        #     "黄": ([26, 43, 46], [34, 255, 255]),
-        # }
         self.COLOR_RANGES = {
-            "红": ([0, 43, 46], [10, 255, 255]),  # 红色区间1
-            "红2": ([156, 43, 46], [180, 255, 255]),  # 红色区间2（名称不同，稍后合并）
-            "橙": ([11, 43, 46], [25, 255, 255]),
-            "黄": ([26, 43, 46], [34, 255, 255]),
+            "黑": ([0, 0, 0], [180, 255, 40]),
+            "白": ([0, 0, 180], [180, 40, 255]),
+            "紫": ([115, 20, 30], [165, 255, 255]),
+            "红1": ([0, 43, 46], [10, 255, 255]),
+            "红2": ([156, 43, 46], [180, 255, 255]),
             "绿": ([35, 43, 46], [77, 255, 255]),
-            "青": ([78, 43, 46], [99, 255, 255]),
-            "蓝": ([100, 43, 46], [124, 255, 255]),
-            "紫": ([125, 43, 46], [155, 255, 255]),
-            "粉": ([156, 43, 46], [180, 255, 255]),  # 粉色（与红色区间重叠，但饱和度可能不同）
-            "棕": ([0, 43, 30], [25, 255, 120]),  # 棕色（低明度的红/橙）
+            "蓝": ([90, 43, 46], [115, 255, 255]),
+            "黄": ([26, 43, 46], [34, 255, 255]),
         }
 
         # 3. 延迟初始化模型预测器（第一次调用时再加载，避免启动过慢）
@@ -129,71 +117,20 @@ class PersonAttributes:
         # 转换到HSV颜色空间，对颜色更敏感
         hsv = cv2.cvtColor(patch_img, cv2.COLOR_BGR2HSV)
 
-        # ---------- 新增------song----20260227
-        height, width = patch_img.shape[:2]
-        total_pixels = height * width
+        max_pixels = 0
+        best_color = "无"
 
-        # ---------- 第一步：判断黑白灰（低饱和度）----------
-        # 饱和度小于30的像素视为低饱和度
-        mask_low_sat = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 30, 255]))
-        low_sat_count = cv2.countNonZero(mask_low_sat)
-
-        # 如果低饱和度像素超过一半，则认为是黑白灰
-        if low_sat_count > total_pixels * 0.5:
-            # 细分黑白灰：分别统计黑、白、灰的像素数
-            mask_black = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 40]))
-            mask_white = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 30, 255]))
-            mask_gray = cv2.inRange(hsv, np.array([0, 0, 41]), np.array([180, 30, 199]))
-
-            black = cv2.countNonZero(mask_black)
-            white = cv2.countNonZero(mask_white)
-            gray = cv2.countNonZero(mask_gray)
-
-            # 返回像素数最多的那个
-            if black >= white and black >= gray:
-                return "黑"
-            elif white >= black and white >= gray:
-                return "白"
-            else:
-                return "灰"
-
-        # ---------- 第二步：处理彩色（饱和度较高）----------
-        # 定义要检查的颜色列表（注意：红和红2都要查，但最终统一为红）
-        color_list = ["红", "红2", "橙", "黄", "绿", "青", "蓝", "紫", "粉", "棕"]
-        max_count = 0
-        best_color = "未知"
-
-        for color in color_list:
-            lower, upper = self.COLOR_RANGES[color]
+        # 遍历所有预定义的颜色范围
+        for name, (lower, upper) in self.COLOR_RANGES.items():
             mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
             count = cv2.countNonZero(mask)
-            if count > max_count:
-                max_count = count
-                best_color = color
 
-        # 过滤噪声（如果最大像素数太少，认为是误判）
-        if max_count < 10:  # 10是经验值，可以调整
-            return "未知"
-
-        # 将“红2”统一为“红”
-        if best_color == "红2":
-            best_color = "红"
+            # 如果该颜色像素数最多且超过阈值（避免噪声）
+            if count > max_pixels and count > 10:
+                max_pixels = count
+                best_color = name.replace("1", "").replace("2", "").replace("_", "")
 
         return best_color
-        # max_pixels = 0
-        # best_color = "无"
-        #
-        # # 遍历所有预定义的颜色范围
-        # for name, (lower, upper) in self.COLOR_RANGES.items():
-        #     mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-        #     count = cv2.countNonZero(mask)
-        #
-        #     # 如果该颜色像素数最多且超过阈值（避免噪声）
-        #     if count > max_pixels and count > 10:
-        #         max_pixels = count
-        #         best_color = name.replace("1", "").replace("2", "").replace("_", "")
-        #
-        # return best_color
 
     def analyze_clothing_color(self, img, draw_on_img=False):
         """
@@ -211,7 +148,7 @@ class PersonAttributes:
         h, w, _ = img.shape
 
         # 1. 定义上衣大致区域（根据人体比例估计）
-        y_min, y_max = int(h * 0.4), int(h * 0.6)  # 从15%到60%高度
+        y_min, y_max = int(h * 0.2), int(h * 0.55)  # 从15%到60%高度
         x_min, x_max = int(w * 0.15), int(w * 0.85)  # 从20%到80%宽度
 
         shirt_h = y_max - y_min
