@@ -17,6 +17,10 @@ from cameraV4 import videoProcessingThread
 from camera_control_usb import Camera
 from viusalPage import ViusalPage
 
+
+# 解决 OpenMP 运行时冲突
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 # 打印当前路径
 print(f"当前工作目录: {os.getcwd()}")
 print(f"Python 路径: {sys.path}")
@@ -245,7 +249,9 @@ class PlatForm(QMainWindow):
 
     def plc_getip_and_start(self):
         # 用于PLC通信
-        self.plcThread = plc_thread(str(self.plc_ip_port["ip"]), int(self.plc_ip_port["port"]))
+        # self.plcThread = plc_thread(str(self.plc_ip_port["ip"]), int(self.plc_ip_port["port"]))
+
+        self.plcThread = plc_thread('169.254.251.233.1.1', 851)
         self.plcThread.start()
         # plc的包发到主线程
         self.plcThread.send_to_txt_browser.connect(self.plcpacket_to_browser)
@@ -816,6 +822,7 @@ class PlatForm(QMainWindow):
         except Exception as e:
             print(f"加载属性识别配置失败: {e}")
 
+
     def update_attributes_display(self, attributes_result):
         """更新属性显示（在主线程中执行）"""
         if attributes_result is None:
@@ -902,8 +909,12 @@ class PlatForm(QMainWindow):
                     if above_threshold is None:
                         above_threshold = []
 
+                    # ========== 重置表格：完全清空 ==========
+                    self.attributes_table.setRowCount(0)
+                    self.attributes_table.setRowCount(len(labels))  # 重新设为26行
+
                     # 只关注这四个属性（后续可以逐步添加）
-                    target_attributes = ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female']
+                    target_attributes = ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female', 'Hat', 'Glasses', 'HandBag', 'ShoulderBag', 'Backpack']
 
                     # 设置表格行数
                     row_count = len(labels)
@@ -921,7 +932,8 @@ class PlatForm(QMainWindow):
                             # 属性名（中英文）
                             label = labels[i]
 
-                            if label not in ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female']:
+                            # if label not in ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female', 'Hat', 'Glasses']:
+                            if label not in target_attributes:
                                 continue  # 跳过非目标属性
 
                             chi_label = label_map.get(label, label) if label_map else label
@@ -971,6 +983,14 @@ class PlatForm(QMainWindow):
                                                                                           QHeaderView.Fixed)  # 第二列固定宽度
                             self.attributes_table.horizontalHeader().setSectionResizeMode(2,
                                                                                           QHeaderView.Fixed)  # 第三列固定宽度
+                        # ========== 在这里插入删除空白行的代码 ==========
+                        row = self.attributes_table.rowCount() - 1
+                        while row >= 0:
+                            if not self.attributes_table.item(row, 0) or not self.attributes_table.item(row,
+                                                                                                        0).text():
+                                self.attributes_table.removeRow(row)
+                            row -= 1
+                        # ========== 临时代码结束 ==========
                 else:
                     # 属性识别失败，清空表格
                     self.attributes_table.setRowCount(0)

@@ -45,7 +45,7 @@
     "person_attributes": {
         "enabled": false,
         "model_dir": "best_model",
-        "update_interval": 150,
+        "update_interval": 60,
         "threshold": 0.7,
         "display": {
             "show_color_patch": true,

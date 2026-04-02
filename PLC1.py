@@ -37,10 +37,18 @@ class plc_thread(QThread):
         }
 
         # 颜色编码映射 (与MainFromNew.py保持一致)
+        # self.color_mapping = {
+        #     '红': 1, '黄': 2, '蓝': 3, '绿': 4,
+        #     '黑': 5, '白': 6, '紫': 7, '未知': 0,
+        #     '未能识别': 0, '无': 0
+        # }
         self.color_mapping = {
-            '红': 1, '黄': 2, '蓝': 3, '绿': 4,
-            '黑': 5, '白': 6, '紫': 7, '未知': 0,
-            '未能识别': 0, '无': 0
+            '红': 1, '橙': 2,  # 可根据需要调整编码顺序
+            '黄': 3, '绿': 4, '青': 5,
+            '蓝': 6, '紫': 7, '粉': 8,
+            '棕': 9, '黑': 10, '白': 11,
+            '灰': 12,
+            '未知': 0, '未能识别': 0, '无': 0
         }
 
         # 属性位映射 (26个属性，每个对应一个bit位)
@@ -108,6 +116,8 @@ class plc_thread(QThread):
         # 新增：存储BOOL数组
         self.attributes_bool_array = [0] * 26  # 初始化为26个0
 
+        # 新增锁定状态
+        self.vision_lock = 0  # 0表示未锁定，1表示锁定
         # 原有晃动检测相关参数
         self.x_history = []
         self.max_history_size = 20
@@ -215,7 +225,8 @@ class plc_thread(QThread):
 
     def run(self):
         """主运行循环，连接PLC并发送数据"""
-        plc = pyads.Connection('5.157.109.58.1.1', 851)
+        # plc = pyads.Connection('5.157.109.58.1.1', 851)
+        plc = pyads.Connection('169.254.251.233.1.1', 851)
         retry_count = 0
         max_retries = 5
         retry_delay = 1
@@ -302,11 +313,11 @@ class plc_thread(QThread):
                 intdiff_y = max(0, min(100, intdiff_y))
 
                 # ========== 2. 发送视觉数据到PLC ==========
-                plc.write_by_name('MAIN.VISION_IDX', int(label), pyads.PLCTYPE_INT)
-                plc.write_by_name('MAIN.VISION_X', intdiff_x, pyads.PLCTYPE_INT)
-                plc.write_by_name('MAIN.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
-                plc.write_by_name('MAIN.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
-                plc.write_by_name('MAIN.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
+                plc.write_by_name('GVL_TCP.VISION_IDX', int(label), pyads.PLCTYPE_INT)
+                plc.write_by_name('GVL_TCP.VISION_X', intdiff_x, pyads.PLCTYPE_INT)
+                plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
+                plc.write_by_name('GVL_TCP.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
+                plc.write_by_name('GVL_TCP.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
 
                 # ========== 3. 发送人物属性数据到PLC ==========
                 # 控制发送频率：每N个周期发送一次
@@ -315,7 +326,7 @@ class plc_thread(QThread):
                     self.attributes_send_counter = 0
 
                     # 发送属性数据
-                    # self._send_attributes_to_plc(plc)
+                    self._send_attributes_to_plc(plc)
 
                 # ========== 4. 输出日志 ==========
                 packet = (
@@ -410,10 +421,46 @@ class plc_thread(QThread):
         if not self.person_attributes_data['valid']:
             return
 
+        """
+           发送属性数据到PLC
+           数组格式：长度为26的整数数组
+           - 值 -1：未使用或整体识别失败
+           - 值  0：属性不存在（识别为否）
+           - 值  1：属性存在（识别为是）
+        """
+        # 需要发送的属性映射： (原索引, 新数组目标索引)
+        SEND_ATTRS = [
+            (0, 1),  # 帽子
+            (1, 2),  # 眼镜
+            (19, 3),  # 大于60岁
+            (20, 4),  # 18-60岁
+            (21, 5),  # 小于18岁
+            (22, 6),  # 女性
+            (15, 7),  # 手提包
+            (16, 8),  # 单肩包
+            (17, 9),  # 双肩包
+        ]
+
+        # 构造发送数组，默认全 -1
+        send_array = [-1] * 26
+
+        # 仅当数据有效时填充实际值
+        if self.person_attributes_data.get('valid', False):
+            bool_array = self.attributes_bool_array  # 0/1 列表
+            for orig_idx, new_idx in SEND_ATTRS:
+                if 0 <= orig_idx < len(bool_array):
+                    # send_array[new_idx] = bool_array[orig_idx]
+                    send_array[new_idx] = bool_array[orig_idx]
+        # 否则 send_array 保持全 -1，表示本次识别整体失败
+
         try:
             # 1. 发送颜色编码
-            color_code = self.person_attributes_data['color_code']
-            plc.write_by_name('MAIN.ATTR_COLOR', color_code, pyads.PLCTYPE_INT)
+            # color_code = self.person_attributes_data['color_code']
+            # plc.write_by_name('GVL_TCP.ATTR_COLOR', color_code, pyads.PLCTYPE_INT)
+            color_code = self.person_attributes_data.get('color_code', 0)
+            send_array[0] = color_code
+
+
 
             # 2. 发送BOOL数组 (26个BOOL值)
             # 注意：pyads可能不支持直接发送BOOL数组，可以转换为INT数组
@@ -421,19 +468,24 @@ class plc_thread(QThread):
 
             # # 方案A：逐个发送BOOL值（兼容性好）
             # for i in range(26):
-            #     reg_name = f'MAIN.ATTR_{i:02d}'  # 如 MAIN.ATTR_00
+            #     reg_name = f'GVL_TCP.ATTR_{i:02d}'  # 如 MAIN.ATTR_00
             #     bool_value = 1 if self.attributes_bool_array[i] else 0
             #     plc.write_by_name(reg_name, bool_value, pyads.PLCTYPE_BOOL)
 
             # 或者方案B：发送INT数组（如果PLC支持）
-            plc.write_by_name('MAIN.ATTR_ARRAY', self.attributes_bool_array, pyads.PLCTYPE_ARR_INT)
+            # plc.write_by_name('GVL_TCP.ATTR_ARRAY', self.attributes_bool_array, pyads.PLCTYPE_ARR_INT)
+
+
+            # plc.write_by_name('GVL_TCP.ATTR_ARRAY', send_array, pyads.PLCTYPE_ARR_INT(26))
+            send_array_16 = send_array[:10]  # 取前10个元素
+            plc.write_by_name('GVL_TCP.ATTR_ARRAY', send_array_16, pyads.PLCTYPE_ARR_INT(10))
 
             # # 3. 发送识别到的属性数量
             # attr_count = self.person_attributes_data['attributes_count']
-            # plc.write_by_name('MAIN.ATTR_COUNT', attr_count, pyads.PLCTYPE_INT)
+            # plc.write_by_name('GVL_TCP.ATTR_COUNT', attr_count, pyads.PLCTYPE_INT)
             #
-            # 4. 发送数据有效标志
-            plc.write_by_name('MAIN.ATTR_VALID', 1, pyads.PLCTYPE_BOOL)
+            # # 4. 发送数据有效标志
+            # plc.write_by_name('GVL_TCP.ATTR_VALID', 1, pyads.PLCTYPE_BOOL)
 
             # 5. 记录发送状态（可选）
             # if attr_count > 0:
