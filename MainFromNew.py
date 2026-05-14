@@ -248,6 +248,9 @@ class PlatForm(QMainWindow):
 
 
     def plc_getip_and_start(self):
+        # 1. 立即禁用按钮，防止重复点击
+        self.plc_button.setEnabled(False)
+
         # 用于PLC通信
         # self.plcThread = plc_thread(str(self.plc_ip_port["ip"]), int(self.plc_ip_port["port"]))
 

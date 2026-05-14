@@ -7,6 +7,7 @@ import socket
 import time
 import pyads
 from sqlalchemy import false
+import asyncio
 
 
 class plc_thread(QThread):
@@ -20,6 +21,10 @@ class plc_thread(QThread):
         self.running = True
         self.ip = ip
         self.port = port
+
+        # 向外部大模型服务器发送数据
+        self.tcp_socket = None  # 用于向外部服务器发送数据
+        self.server_addr = ('115.191.27.233', 9000)
 
         # ========== 原有视觉数据 ==========
         self.voice_plc_data = (1000, "invalid", 100)
@@ -225,11 +230,13 @@ class plc_thread(QThread):
 
     def run(self):
         """主运行循环，连接PLC并发送数据"""
-        # plc = pyads.Connection('5.157.109.58.1.1', 851)
-        plc = pyads.Connection('169.254.251.233.1.1', 851)
+        plc = pyads.Connection('5.157.109.58.1.1', 851)
+        # plc = pyads.Connection('169.254.251.233.1.1', 851)
         retry_count = 0
         max_retries = 5
         retry_delay = 1
+        # # 给大模型服务端发数据
+        # reader, writer = asyncio.open_connection('115.191.27.233', 9000)
 
         # 连接重试循环
         while self.running and retry_count < max_retries:
@@ -244,6 +251,8 @@ class plc_thread(QThread):
                         self.connected = True
                         retry_count = 0
                         self.send_to_txt_browser.emit(f"成功连接到PLC!")
+                        # 新增：连接外部服务器
+                        self.connect_to_server()
                         break
                     else:
                         raise Exception("连接已打开但状态异常")
@@ -282,6 +291,11 @@ class plc_thread(QThread):
                 except ValueError:
                     diff_y = 0
 
+                try:
+                    distance = int(self.visual_plc_data[3])
+                except ValueError:
+                    distance = 50
+
                 intdiff_x = int(((diff_x + 450) / 900) * 100)
                 intdiff_y = int(((diff_y + 400) / 800) * 100)
                 intdiff_y = 100 - intdiff_y
@@ -315,7 +329,8 @@ class plc_thread(QThread):
                 # ========== 2. 发送视觉数据到PLC ==========
                 plc.write_by_name('GVL_TCP.VISION_IDX', int(label), pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_X', intdiff_x, pyads.PLCTYPE_INT)
-                plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
+                # plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
+                plc.write_by_name('GVL_TCP.VISION_Y', distance, pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
                 plc.write_by_name('GVL_TCP.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
 
@@ -324,13 +339,13 @@ class plc_thread(QThread):
                 self.attributes_send_counter += 1
                 if self.attributes_send_counter >= self.attributes_send_interval:
                     self.attributes_send_counter = 0
-
-                    # 发送属性数据
-                    self._send_attributes_to_plc(plc)
+                    # 只有锁定目标时才发送属性数据
+                    if self.vision_lock == 1:
+                        self._send_attributes_to_plc(plc)
 
                 # ========== 4. 输出日志 ==========
                 packet = (
-                    f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, "
+                    f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, 距离{distance}"
                     f"锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
                 )
 
@@ -495,6 +510,68 @@ class plc_thread(QThread):
             #         f"属性数据已发送: 颜色{self.person_attributes_data['color']}({color_code}), " +
             #         f"识别{attr_count}个属性"
             #     )
+            # ---------- 生成并打印识别到的属性日志（包含颜色，仅限 SEND_ATTRS 内的属性） ----------
+            if self.person_attributes_data.get('valid', False):
+                detected_attr_names = []
+                bool_array = self.attributes_bool_array
+                for orig_idx, _ in SEND_ATTRS:
+                    # 查找属性中文名
+                    chi_name = None
+                    for idx, (_, eng, chi) in enumerate(self.attribute_array_mapping):
+                        if idx == orig_idx:
+                            chi_name = chi
+                            break
+                    if chi_name is None:
+                        continue
+                    if orig_idx == 22:  # 女性属性特殊处理
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("女性")
+                        elif bool_array[orig_idx] == 0:
+                            detected_attr_names.append("男性")
+                    elif orig_idx == 19:  # 大于60岁 -> 老年
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("老年")
+                    elif orig_idx == 20:  # 18-60岁 -> 青年
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("青年")
+                    elif orig_idx == 21:  # 小于18岁 -> 少年
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("少年")
+                    else:
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append(chi_name)
+
+                # 获取上衣颜色（如果有效）
+                color = self.person_attributes_data.get('color', '未知')
+                if color and color != '未知':
+                    detected_attr_names.insert(0, "上衣颜色" + color)  # 将颜色放在最前面
+
+                if detected_attr_names:
+                    message = "人物属性数据: " + "、".join(detected_attr_names)
+                    print(message)
+                    if self.tcp_socket:
+                        try:
+                            # 发送数据（加换行符方便服务端解析）
+                            self.tcp_socket.send((message + "\n").encode('utf-8'))
+                        except Exception as e:
+                            self.send_to_txt_browser.emit(f"发送属性数据到服务器失败: {e}")
+                            # 可选：尝试重连
+                            self.tcp_socket = None
+                            self.connect_to_server()
+            # ------------------------------------------------
 
         except Exception as e:
             self.send_to_txt_browser.emit(f"发送属性数据失败: {e}")
+
+    def connect_to_server(self):
+        """建立 TCP 连接到外部服务器"""
+        try:
+            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_socket.connect(self.server_addr)
+            self.tcp_socket.setblocking(False)   # 可选：设为非阻塞，避免影响主循环
+            self.send_to_txt_browser.emit(f"成功连接到外部服务器 {self.server_addr}")
+            return True
+        except Exception as e:
+            self.send_to_txt_browser.emit(f"连接外部服务器失败: {e}")
+            self.tcp_socket = None
+            return False
