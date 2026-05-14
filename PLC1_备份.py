@@ -235,8 +235,6 @@ class plc_thread(QThread):
         retry_count = 0
         max_retries = 5
         retry_delay = 1
-        # # 给大模型服务端发数据
-        # reader, writer = asyncio.open_connection('115.191.27.233', 9000)
 
         # 连接重试循环
         while self.running and retry_count < max_retries:
@@ -291,11 +289,6 @@ class plc_thread(QThread):
                 except ValueError:
                     diff_y = 0
 
-                try:
-                    distance = int(self.visual_plc_data[3])
-                except ValueError:
-                    distance = 50
-
                 intdiff_x = int(((diff_x + 450) / 900) * 100)
                 intdiff_y = int(((diff_y + 400) / 800) * 100)
                 intdiff_y = 100 - intdiff_y
@@ -312,8 +305,8 @@ class plc_thread(QThread):
                         self.is_swinging = False
 
                 # 偏移量变换
-                intxMin = 40
-                intxMax = 80
+                intxMin = 0
+                intxMax = 100
 
                 if intxMin <= intdiff_x <= intxMax:
                     intdiff_x = int((intdiff_x - intxMin) * (100 / (intxMax - intxMin)))
@@ -329,8 +322,7 @@ class plc_thread(QThread):
                 # ========== 2. 发送视觉数据到PLC ==========
                 plc.write_by_name('GVL_TCP.VISION_IDX', int(label), pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_X', intdiff_x, pyads.PLCTYPE_INT)
-                # plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
-                plc.write_by_name('GVL_TCP.VISION_Y', distance, pyads.PLCTYPE_INT)
+                plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
                 plc.write_by_name('GVL_TCP.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
 
@@ -345,7 +337,7 @@ class plc_thread(QThread):
 
                 # ========== 4. 输出日志 ==========
                 packet = (
-                    f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, 距离{distance}"
+                    f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, "
                     f"锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
                 )
 
@@ -359,7 +351,7 @@ class plc_thread(QThread):
                 self.send_to_txt_browser.emit(packet)
 
                 # ========== 5. 休眠（控制发送频率） ==========
-                time.sleep(1)  # 原有视觉数据发送频率
+                time.sleep(0.1)  # 原有视觉数据发送频率
 
             except Exception as e:
                 self.send_to_txt_browser.emit(f"PLC通信错误: {str(e)}")

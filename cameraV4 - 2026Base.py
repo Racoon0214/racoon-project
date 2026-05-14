@@ -92,7 +92,6 @@ class videoProcessingThread(QThread):
 
         # 目标检测模型，以及配置目标跟踪
         self.tracker = Tracker()
-
         self.tracker.init_tracker()
         # print(os.getcwd())
 
@@ -106,11 +105,6 @@ class videoProcessingThread(QThread):
                                  '6': 'pick up', '7': 'sit down', '8': 'stand', '9': 'taking a selfie', '10': 'thumb up', '11': 'use phone', '12': 'walk'}
 
         self.running = False
-
-        self.locked_target = {
-            'track_id': None,  # 当前锁定ID
-            'last_bbox': None,  # 上一帧bbox，用于丢失恢复
-        }
 
         self.fps_window_size = 10
         # self.target_id = torch.tensor(0)  # 默认为1
@@ -624,7 +618,6 @@ class videoProcessingThread(QThread):
                     # 相对画面中心的偏移量实现 定义 右为正，左为负，上为正，下为负
 
                     # self.camera_log.emit(str(detect_num))
-                    # ===== 无人检测处理 (保留原逻辑) =====
                     if detect_num == 0:
                         #中心点记忆清零
                         self.last_bbox_center_x = 0
@@ -652,27 +645,6 @@ class videoProcessingThread(QThread):
                             if image_match_flag == False:
                                 # self.target_signal.emit(2)
                                 continue
-
-                    # ===== 新增：锁定目标恢复逻辑 ====songpeng=20260513
-                    if self.locked_target['track_id'] is not None:
-                        if self.locked_target['track_id'] not in results:
-                            best_iou = 0
-                            best_id = None
-                            for cur_id, bbox in results.items():
-                                iou = self.compute_iou(bbox, self.locked_target['last_bbox'])
-                                if iou > best_iou:
-                                    best_iou = iou
-                                    best_id = cur_id
-                            if best_iou > 0.3:    # 阈值可调
-                                self.locked_target['track_id'] = best_id
-                                self.locked_target['last_bbox'] = results[best_id]
-                                self.target_id = best_id
-                        else:
-                            self.locked_target['last_bbox'] = results[self.locked_target['track_id']]
-                    else:
-                        if self.target_id in results:
-                            self.locked_target['track_id'] = self.target_id
-                            self.locked_target['last_bbox'] = results[self.target_id]
 
                     # 找到对应的目标
                     i = 0
@@ -851,26 +823,6 @@ class videoProcessingThread(QThread):
 
 
             # print("memeory_cnt",self.memory_cnt)
-
-        # ===== 新增方法：计算IOU，用于锁定目标恢复 ========songpeng=20260513=
-
-    def compute_iou(self, box1, box2):
-        # box = [x1, y1, x2, y2]
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        iou = inter_area / (box1_area + box2_area - inter_area + 1e-6)
-        return iou
-
-    #     # ===== 锁定目标接口，用户选择或随机锁定 =====
-    #
-    # def lock_target(self, track_id, bbox):
-    #     self.locked_target['track_id'] = track_id
-    #     self.locked_target['last_bbox'] = bbox
 
     def resolution_enhancement(self, frame):
         # 使用INTER_LANCZOS4插值方法来增强画质

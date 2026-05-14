@@ -28,8 +28,8 @@
         "detectFalseCount_thre_time": 10,
         "image_match_thre": 5,
         "image_match_thre_time": 5,
-        "person_lost_thre": 30,
-        "person_lost_thre_time": 5
+        "person_lost_thre": 50,
+        "person_lost_thre_time": 10
     },
     "voice": {
         "BeiBei_text_count_thread": 18,

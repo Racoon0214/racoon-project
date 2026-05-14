@@ -92,7 +92,6 @@ class videoProcessingThread(QThread):
 
         # 目标检测模型，以及配置目标跟踪
         self.tracker = Tracker()
-
         self.tracker.init_tracker()
         # print(os.getcwd())
 
@@ -106,11 +105,6 @@ class videoProcessingThread(QThread):
                                  '6': 'pick up', '7': 'sit down', '8': 'stand', '9': 'taking a selfie', '10': 'thumb up', '11': 'use phone', '12': 'walk'}
 
         self.running = False
-
-        self.locked_target = {
-            'track_id': None,  # 当前锁定ID
-            'last_bbox': None,  # 上一帧bbox，用于丢失恢复
-        }
 
         self.fps_window_size = 10
         # self.target_id = torch.tensor(0)  # 默认为1
@@ -158,16 +152,7 @@ class videoProcessingThread(QThread):
         self.max_memory_cnt = 18
         # 记录上一次检测到的bbox中心点，小范围的移动不更新bbox框，解决小范围抖动问题
         self.last_bbox_center_x = 0
-        self.last_bbox_center_x = 0
         self.last_bbox_center_y = 0
-
-        # ========= 新增距离计算参数 =========
-        self.min_bbox_height = 250              #对应熊头0
-        self.max_bbox_height = 600              #对应熊头0.6
-        self.min_distance = 3.0  # 米
-        self.max_distance = 7.0  # 米
-        self.smoothed_distance = self.max_distance
-        self.smooth_alpha = 0.3
 
         # ========== 新增：人物属性识别相关初始化 ==========song
         # 1. 线程池（用于并行处理）
@@ -501,8 +486,6 @@ class videoProcessingThread(QThread):
         """计算目标ID的动作ID相对画面中心的偏移量"""
         for id, bbox in results.items():
             if id == self.target_id:
-                # --- 更新 bbox 中心点 ---
-                self.remember_bbox(bbox)  # 更新 self.bbox_center_x / self.bbox_center_y / self.bbox_width / self.bb
                 # 计算偏移量
                 # 0为正，1为负，右为正，左为负，上为正，下为负
                 screen_center_x = self.frame_width / 2
@@ -514,17 +497,6 @@ class videoProcessingThread(QThread):
                 offset_x = int(center_x - screen_center_x)
                 offset_y = int(center_y - screen_center_y)
 
-                # --- distance 计算（通过 bbox 高度） ---
-                bbox_h = max(self.min_bbox_height, min(self.max_bbox_height, self.bbox_height))
-                ratio = (self.max_bbox_height - bbox_h) / (self.max_bbox_height - self.min_bbox_height)
-                distance_m = self.min_distance + ratio * (self.max_distance - self.min_distance)
-
-                # --- 平滑滤波 ---
-                self.smoothed_distance = self.smooth_alpha * distance_m + (1 - self.smooth_alpha) * self.smoothed_distance
-
-                distance_output =int((self.smoothed_distance - self.min_distance) /
-                    (self.max_distance - self.min_distance) * 100)
-
                 # 获取动作ID
                 if preds is not None:
                     action_id = preds[0].probs.top1
@@ -534,7 +506,7 @@ class videoProcessingThread(QThread):
                     # 禁用行为识别时，发送默认值
                     action_id = 0  # 或者 "stand" 等默认值
 
-                data = (action_id, offset_x, offset_y,distance_output)
+                data = (action_id, offset_x, offset_y)
                 self.update_detection.emit(data)
                 # print(data)   坐标xy轴的log song
                 break
@@ -624,7 +596,6 @@ class videoProcessingThread(QThread):
                     # 相对画面中心的偏移量实现 定义 右为正，左为负，上为正，下为负
 
                     # self.camera_log.emit(str(detect_num))
-                    # ===== 无人检测处理 (保留原逻辑) =====
                     if detect_num == 0:
                         #中心点记忆清零
                         self.last_bbox_center_x = 0
@@ -653,27 +624,6 @@ class videoProcessingThread(QThread):
                                 # self.target_signal.emit(2)
                                 continue
 
-                    # ===== 新增：锁定目标恢复逻辑 ====songpeng=20260513
-                    if self.locked_target['track_id'] is not None:
-                        if self.locked_target['track_id'] not in results:
-                            best_iou = 0
-                            best_id = None
-                            for cur_id, bbox in results.items():
-                                iou = self.compute_iou(bbox, self.locked_target['last_bbox'])
-                                if iou > best_iou:
-                                    best_iou = iou
-                                    best_id = cur_id
-                            if best_iou > 0.3:    # 阈值可调
-                                self.locked_target['track_id'] = best_id
-                                self.locked_target['last_bbox'] = results[best_id]
-                                self.target_id = best_id
-                        else:
-                            self.locked_target['last_bbox'] = results[self.locked_target['track_id']]
-                    else:
-                        if self.target_id in results:
-                            self.locked_target['track_id'] = self.target_id
-                            self.locked_target['last_bbox'] = results[self.target_id]
-
                     # 找到对应的目标
                     i = 0
                     target_spotted = False
@@ -691,8 +641,6 @@ class videoProcessingThread(QThread):
                                     color=color, thickness=thickness)
                                 cv2.putText(frame, f'ID: {id}', (int(bbox[0]), int(bbox[1] - 10)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)
-                                # cv2.putText(frame,f'ID: {id} BBoxH:{self.bbox_height}px', (int(bbox[0]), int(bbox[1] - 10)),
-                                #     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)  # songpeng 需要删除
                                 # 在外置页面上进行展示
                                 color = (0, 100, 255)
                                 thickness = 2
@@ -807,10 +755,7 @@ class videoProcessingThread(QThread):
                         except TypeError:
                             fps_label = "recognizing..."
                         # 如果绿色标签没有显示，就是acc_thre给的太高
-                        fps_label = fps_label + "  "+f' BBoxH:{self.bbox_height}px'
                         cv2.putText(frame, fps_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                        # cv2.putText(frame, f'ID: {self.target_id} BBoxH:{self.bbox_height}px',
-                        #             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                     # 无论图像是何种都需要将其发送出去，以保证页面的流畅性
                     self.update_detected_frame.emit(frame)
@@ -851,26 +796,6 @@ class videoProcessingThread(QThread):
 
 
             # print("memeory_cnt",self.memory_cnt)
-
-        # ===== 新增方法：计算IOU，用于锁定目标恢复 ========songpeng=20260513=
-
-    def compute_iou(self, box1, box2):
-        # box = [x1, y1, x2, y2]
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        iou = inter_area / (box1_area + box2_area - inter_area + 1e-6)
-        return iou
-
-    #     # ===== 锁定目标接口，用户选择或随机锁定 =====
-    #
-    # def lock_target(self, track_id, bbox):
-    #     self.locked_target['track_id'] = track_id
-    #     self.locked_target['last_bbox'] = bbox
 
     def resolution_enhancement(self, frame):
         # 使用INTER_LANCZOS4插值方法来增强画质
