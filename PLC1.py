@@ -14,6 +14,7 @@ class plc_thread(QThread):
     send_to_txt_browser = pyqtSignal(str)
     # 可以添加一个信号用于发送属性识别状态
     attributes_data_updated = pyqtSignal(dict)
+    connection_status = pyqtSignal(bool)  # ✨ 新增：连接状态信号
 
     def __init__(self, ip, port):
         super().__init__()
@@ -28,7 +29,7 @@ class plc_thread(QThread):
 
         # ========== 原有视觉数据 ==========
         self.voice_plc_data = (1000, "invalid", 100)
-        self.visual_plc_data = ("invalid_action", 1000, 1000)
+        self.visual_plc_data = ("invalid_action", 1000, 1000, 50, 0)
 
         # ========== 新增：人物属性数据 ==========
         self.person_attributes_data = {
@@ -265,6 +266,7 @@ class plc_thread(QThread):
 
                     if retry_count >= max_retries:
                         self.send_to_txt_browser.emit("尝试连接PLC最大次数到达, 中断线程")
+                        self.connection_status.emit(False)  # ✨ 发送连接失败信号
                         break
 
                     time.sleep(retry_delay)
@@ -285,16 +287,25 @@ class plc_thread(QThread):
                 try:
                     diff_x = int(self.visual_plc_data[1])
                 except ValueError:
-                    diff_x = 0
+                    diff_x = 50
                 try:
                     diff_y = int(self.visual_plc_data[2])
                 except ValueError:
-                    diff_y = 0
+                    diff_y = 50
 
                 try:
                     distance = int(self.visual_plc_data[3])
                 except ValueError:
                     distance = 50
+
+                # ✨ 新增：获取人物数量（第5个元素）
+                try:
+                    person_count = int(self.visual_plc_data[4])
+                    self.person_count = person_count  # 更新内部状态
+                except (ValueError, IndexError):
+                    person_count = 0
+                    self.person_count = 0
+
 
                 intdiff_x = int(((diff_x + 450) / 900) * 100)
                 intdiff_y = int(((diff_y + 400) / 800) * 100)
@@ -346,7 +357,7 @@ class plc_thread(QThread):
                 # ========== 4. 输出日志 ==========
                 packet = (
                     f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, 距离{distance}"
-                    f"锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
+                    f"人数:{person_count}, 锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
                 )
 
                 # 如果发送了属性数据，添加到日志
@@ -364,6 +375,7 @@ class plc_thread(QThread):
             except Exception as e:
                 self.send_to_txt_browser.emit(f"PLC通信错误: {str(e)}")
                 self.connected = False
+                self.connection_status.emit(False)  # ✨ 发送连接失败信号
                 break
 
     # ========== 原有辅助方法 ==========
@@ -547,7 +559,7 @@ class plc_thread(QThread):
                     detected_attr_names.insert(0, "上衣颜色" + color)  # 将颜色放在最前面
 
                 if detected_attr_names:
-                    message = "人物属性数据: " + "、".join(detected_attr_names)
+                    message = "人物属性数据: " + "、".join(detected_attr_names) + "。周围还有人数: " + str(self.person_count - 1)
                     print(message)
                     if self.tcp_socket:
                         try:

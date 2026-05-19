@@ -69,6 +69,10 @@ class videoProcessingThread(QThread):
         print("=== DEBUG: videoProcessingThread.__init__ 被调用 ===")
         print(f"当前工作目录: {os.getcwd()}")
 
+        # 添加丢失恢复计数器 songpeng
+        self.target_lost_frames = 0
+        self.max_lost_frames = 10
+
         # 添加CUDA错误计数器
         self.cuda_error_count = 0
         self.max_cuda_errors = 5  # 最多允许5次CUDA错误，然后尝试重启线程
@@ -497,7 +501,7 @@ class videoProcessingThread(QThread):
         # 在主线程的关闭相应函数里面也加了这个
         self.executor.shutdown(wait=False)
 
-    def update_detection_collect(self, results, preds = None):
+    def update_detection_collect(self, results, preds = None, detect_num=0):
         """计算目标ID的动作ID相对画面中心的偏移量"""
         for id, bbox in results.items():
             if id == self.target_id:
@@ -534,7 +538,7 @@ class videoProcessingThread(QThread):
                     # 禁用行为识别时，发送默认值
                     action_id = 0  # 或者 "stand" 等默认值
 
-                data = (action_id, offset_x, offset_y,distance_output)
+                data = (action_id, offset_x, offset_y,distance_output,detect_num)
                 self.update_detection.emit(data)
                 # print(data)   坐标xy轴的log song
                 break
@@ -577,9 +581,25 @@ class videoProcessingThread(QThread):
 
             consecutive_errors = 0
 
+            # 在主循环中每N帧清理一次  songpeng 20260516
+            frame_count = 0
+            cleanup_interval = 1000  # 每100帧清理一次
+
             # 改正这里self.cam持续输出图片
             while True and self.running:
                 try:
+                    frame_count += 1
+
+                    if frame_count % cleanup_interval == 0:
+                        try:
+                            if torch.cuda.is_available():
+                                torch.cuda.synchronize()  # ✨ 同步等待GPU完成所有操作
+                                torch.cuda.empty_cache()
+                            gc.collect()
+                            self.camera_log.emit(f"[清理] 定期内存清理完成 (第{frame_count}帧)")
+                        except RuntimeError as e:
+                            self.camera_log.emit(f"[警告] 内存清理失败: {str(e)[:100]}")
+
                     # 检查属性识别状态变化
                     if self.attributes_enabled != last_attributes_status:
                         last_attributes_status = self.attributes_enabled
@@ -656,23 +676,35 @@ class videoProcessingThread(QThread):
                     # ===== 新增：锁定目标恢复逻辑 ====songpeng=20260513
                     if self.locked_target['track_id'] is not None:
                         if self.locked_target['track_id'] not in results:
+                            # 增加时间限制：如果丢失超过一定帧数，不再恢复
+                            if self.target_lost_frames > self.max_lost_frames:
+                                self.locked_target['track_id'] = None
+                                self.camera_log.emit("目标丢失过久，停止恢复")
+                                continue
+
                             best_iou = 0
                             best_id = None
+
                             for cur_id, bbox in results.items():
                                 iou = self.compute_iou(bbox, self.locked_target['last_bbox'])
                                 if iou > best_iou:
                                     best_iou = iou
                                     best_id = cur_id
-                            if best_iou > 0.3:    # 阈值可调
+                            if best_iou > 0.6:    # 阈值可调 songpeng
                                 self.locked_target['track_id'] = best_id
                                 self.locked_target['last_bbox'] = results[best_id]
                                 self.target_id = best_id
+                                self.target_lost_frames  = 0
+                            else:
+                                self.target_lost_frames += 1
                         else:
                             self.locked_target['last_bbox'] = results[self.locked_target['track_id']]
+                            self.target_lost_frames += 1
                     else:
                         if self.target_id in results:
                             self.locked_target['track_id'] = self.target_id
                             self.locked_target['last_bbox'] = results[self.target_id]
+                            self.target_lost_frames += 1
 
                     # 找到对应的目标
                     i = 0
@@ -737,7 +769,7 @@ class videoProcessingThread(QThread):
                         # action_queue.enqueue(item=action_preds)
                         #
                         # 传信函数在这里
-                        self.update_detection_collect(results,preds)
+                        self.update_detection_collect(results,preds, detect_num)
 
                     # ========== 新增：在目标检测后添加属性识别 ==========songpeng
                     # 添加属性识别的日志

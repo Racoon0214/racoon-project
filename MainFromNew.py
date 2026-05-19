@@ -255,11 +255,23 @@ class PlatForm(QMainWindow):
         # self.plcThread = plc_thread(str(self.plc_ip_port["ip"]), int(self.plc_ip_port["port"]))
 
         self.plcThread = plc_thread('169.254.251.233.1.1', 851)
+        # ✨ 连接连接状态信号
+        self.plcThread.connection_status.connect(self.on_plc_connection_status)
+
         self.plcThread.start()
         # plc的包发到主线程
         self.plcThread.send_to_txt_browser.connect(self.plcpacket_to_browser)
         # plc线程状态信息
         # self.plcThread.plcthread_state.connect(self.clear_plcthread)
+
+    def on_plc_connection_status(self, success):
+        """处理PLC连接状态"""
+        if success:
+            self.showMessage("✅ PLC连接成功，启动按钮已禁用")
+        else:
+            # ✨ 连接失败时重新启用按钮
+            self.plc_button.setEnabled(True)
+            self.showMessage("❌ PLC连接失败，请检查IP/端口后重试")
 
     def switchNextFunc(self, flag):
         self.showMessage("This switch num" + str(flag))
