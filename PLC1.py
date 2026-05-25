@@ -565,6 +565,7 @@ class plc_thread(QThread):
                         try:
                             # 发送数据（加换行符方便服务端解析）
                             self.tcp_socket.send((message + "\n").encode('utf-8'))
+                            self.send_to_txt_browser.emit(f"向语音服务器发送属性数据到服务器成功 {message}")
                         except Exception as e:
                             self.send_to_txt_browser.emit(f"发送属性数据到服务器失败: {e}")
                             # 可选：尝试重连

@@ -76,6 +76,9 @@ class PersonAttributes:
         self.predictor = None
         self.use_gpu = use_gpu
         self._model_loaded = False
+        # 防抖缓存
+        self._last_img_hash = None
+        self._last_result = None
 
     def _init_predictor(self):
         """
@@ -346,7 +349,10 @@ class PersonAttributes:
 
     # ==================== 综合分析方法 ====================
 
-    def analyze_full(self, img, analyze_color=True, analyze_attributes=True):
+    # def analyze_full(self, img, analyze_color=True, analyze_attributes=True):
+    def analyze_full(self, img, analyze_color=True, analyze_attributes=True,
+                         enhance=False, gamma=1.5, use_clahe=True, use_wb=True,
+                         stabilize=False, similarity_threshold=0.95):
         """
         完整的人物属性分析（颜色 + 26种属性）
 
@@ -377,6 +383,23 @@ class PersonAttributes:
             }
         """
         import datetime
+
+        # 防抖：若启用且与上一帧图像相似，直接返回上次结果
+        if stabilize:
+            curr_hash = self._get_image_hash(img)
+            if curr_hash is not None and self._last_img_hash is not None:
+                sim = self._hash_similarity(curr_hash, self._last_img_hash)
+                if sim >= similarity_threshold and self._last_result is not None:
+                    # 更新时间戳
+                    self._last_result['summary']['timestamp'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    return self._last_result
+            self._last_img_hash = curr_hash
+
+        # 图像增强（如果启用）
+        processed_img = img
+        if enhance:
+            processed_img = self._apply_enhancement(img, gamma, use_clahe, use_wb)
+            img = processed_img
 
         result = {
             'color_result': None,
@@ -474,6 +497,77 @@ class PersonAttributes:
         else:
             attrs_str = "、".join(main_attrs)
             return f"上衣{color}，特征: {attrs_str}"
+
+    # ==================== 图像增强方法 ====================songpeng 20260522
+    def _gamma_correction(self, img, gamma=1.5):
+        """伽马校正，提亮暗部"""
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        return cv2.LUT(img, table)
+
+    def _clahe_equalization(self, img, clip_limit=2.0, grid_size=(8, 8)):
+        """CLAHE 自适应直方图均衡化（在 LAB 空间对 L 通道处理）"""
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
+        l_eq = clahe.apply(l)
+        lab_eq = cv2.merge([l_eq, a, b])
+        return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+
+    def _auto_white_balance(self, img):
+        """灰度世界法自动白平衡"""
+        result = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        avg_a = np.average(result[:, :, 1])
+        avg_b = np.average(result[:, :, 2])
+        result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 1] / 255.0))
+        result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 2] / 255.0))
+        return cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
+
+    def _apply_enhancement(self, img, gamma=1.5, use_clahe=True, use_wb=True):
+        """组合图像增强"""
+        try:
+            result = img.copy()
+            if gamma != 1.0:
+                result = self._gamma_correction(result, gamma)
+            if use_wb:
+                result = self._auto_white_balance(result)
+            if use_clahe:
+                result = self._clahe_equalization(result)
+            return result
+        except Exception as e:
+            print(f"图像增强失败: {e}，使用原图")
+            return img
+
+    # ==================== 防抖相关方法 ==================== songpeng 20260522
+    def _get_image_hash(self, img, hash_size=16):
+        """计算感知哈希（pHash）"""
+        try:
+            if img is None or img.size == 0:
+                return None
+            resized = cv2.resize(img, (hash_size, hash_size))
+            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            dct = cv2.dct(np.float32(gray))
+            dct_low = dct[:8, :8]
+            avg = np.mean(dct_low)
+            hash_val = 0
+            for i in range(8):
+                for j in range(8):
+                    if dct_low[i, j] > avg:
+                        hash_val |= (1 << (i * 8 + j))
+            return hash_val
+        except Exception as e:
+            print(f"计算图像哈希失败: {e}")
+            return None
+
+    def _hash_similarity(self, hash1, hash2):
+        """计算两个哈希的相似度（汉明距离 -> 归一化相似度）"""
+        if hash1 is None or hash2 is None:
+            return 0.0
+        # 计算汉明距离
+        xor = hash1 ^ hash2
+        hamming = bin(xor).count('1')
+        # 归一化相似度（64位哈希）
+        return 1.0 - hamming / 64.0
 
 
 # ==================== 独立测试函数 ====================

@@ -1230,7 +1230,13 @@ class AttributesAnalysisWorker(QRunnable):
             result = self.attributes_detector.analyze_full(
                 person_img,
                 analyze_color=True,
-                analyze_attributes=True
+                analyze_attributes=True,
+                enhance=True,           # 开启图像增强
+                gamma=1.5,              # 伽马校正参数
+                use_clahe=True,         # 开启CLAHE
+                use_wb=True,            # 开启自动白平衡
+                stabilize=True,         # 开启防抖（连续相似帧复用结果）
+                similarity_threshold=0.95
             )
 
             # 3. 回调主线程
