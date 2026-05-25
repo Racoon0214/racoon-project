@@ -577,6 +577,14 @@ class PlatForm(QMainWindow):
         timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
         message = timestamp + " " + message
         self.textBrowser.append(message)
+        # 限制最大行数（例如1000行）
+        max_lines = 1000
+        doc = self.textBrowser.document()
+        if doc.blockCount() > max_lines:
+            cursor = QTextCursor(doc.firstBlock())
+            cursor.select(QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # 删除残留的换行符
 
     def initTextBrowser(self):
         """初始化文本浏览器设置"""

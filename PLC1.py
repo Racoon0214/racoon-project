@@ -25,7 +25,7 @@ class plc_thread(QThread):
 
         # 向外部大模型服务器发送数据
         self.tcp_socket = None  # 用于向外部服务器发送数据
-        self.server_addr = ('115.191.27.233', 9000)
+        self.server_addr = ('127.0.0.1', 9000)
 
         # ========== 原有视觉数据 ==========
         self.voice_plc_data = (1000, "invalid", 100)
@@ -565,6 +565,7 @@ class plc_thread(QThread):
                         try:
                             # 发送数据（加换行符方便服务端解析）
                             self.tcp_socket.send((message + "\n").encode('utf-8'))
+                            self.send_to_txt_browser.emit(f"向语音服务器发送属性数据到服务器成功 {message}")
                         except Exception as e:
                             self.send_to_txt_browser.emit(f"发送属性数据到服务器失败: {e}")
                             # 可选：尝试重连
