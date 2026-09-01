@@ -259,6 +259,10 @@ class PlatForm(QMainWindow):
         self.plcThread.connection_status.connect(self.on_plc_connection_status)
 
         self.plcThread.start()
+
+        # ✅ 连接信号 人脸向量（必须在线程启动后）
+        self.videoThread.face_vector_extracted.connect(self.plcThread.update_face_vector )
+
         # plc的包发到主线程
         self.plcThread.send_to_txt_browser.connect(self.plcpacket_to_browser)
         # plc线程状态信息

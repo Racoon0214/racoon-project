@@ -143,7 +143,7 @@ class Tracker():
                     with torch.no_grad():
                         output = self.model_class.predict(img_tensor, conf=self.conf_thresh, iou=self.nms_thresh,
                                                           classes=0, verbose=False)
-                else:
+                else: 
                     # 非CUDA错误，直接返回空结果
                     print(f"[Tracker] 非CUDA错误: {str(e)[:100]}")
                     return 0, {}, torch.Tensor([])

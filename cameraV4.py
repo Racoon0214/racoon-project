@@ -64,10 +64,11 @@ class videoProcessingThread(QThread):
     target_signal = pyqtSignal(int)
     face_target = pyqtSignal(int)
 
+    # ✅ 新增这一行
+    face_vector_extracted = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
-        print("=== DEBUG: videoProcessingThread.__init__ 被调用 ===")
-        print(f"当前工作目录: {os.getcwd()}")
 
         # 添加丢失恢复计数器 songpeng
         self.target_lost_frames = 0
@@ -78,6 +79,8 @@ class videoProcessingThread(QThread):
         self.max_cuda_errors = 5  # 最多允许5次CUDA错误，然后尝试重启线程
         # 控制参数：是否使用GPU
         self.use_gpu = True  # 默认使用GPU
+
+
 
         # 判断是否有可用的GPU
         self.gpu_available = torch.cuda.is_available()
@@ -176,7 +179,7 @@ class videoProcessingThread(QThread):
         # ========== 新增：人物属性识别相关初始化 ==========song
         # 1. 线程池（用于并行处理）
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(1)  # 只允许一个属性识别线程，避免资源竞争
+        self.thread_pool.setMaxThreadCount(2)  # 只允许一个属性识别线程，避免资源竞争
         # 任务队列监控
         self.pending_attributes_tasks = 0  # 当前待处理的任务数
         self.max_pending_tasks = 2  # 最大允许的待处理任务数
@@ -200,6 +203,11 @@ class videoProcessingThread(QThread):
 
 
         self.attributes_use_cpu = True  # 添加此标志控制是否使用cpu模式
+
+        # ========== 新增：人脸向量提取控制 ==========
+        self.face_extract_counter = 0  # 帧计数器，用于控制提取频率
+        self.face_extract_interval = 60  # 每3帧提取一次
+        self.last_face_extract_time = 0  # 上次提取的时间戳（可选项，用于额外限速）
 
     def CamInit(self, device_index):
         self.Cam = Camera(device_index)
@@ -789,6 +797,9 @@ class videoProcessingThread(QThread):
                         # 执行属性识别（异步）
                         self.analyze_person_attributes(frame, self.target_id, bbox)
 
+                        # ✅ 新增：异步提取人脸向量（每3帧一次）
+                        self.extract_face_vector_async(frame, self.target_id, bbox)
+
                     # 将显示的识别数据和发送的数据分开，可在页面单独显示该画面
                     print_acc = 0.0
                     if action_count == self.num_frame:
@@ -965,6 +976,8 @@ class videoProcessingThread(QThread):
     def disable_attributes_analysis(self):
         """禁用人物属性识别功能"""
         self.attributes_enabled = False
+        # 重置人脸提取计数器，避免残留
+        self.face_extract_counter = 0
         if self.attributes_detector:
             self.attributes_detector = None
         self.camera_log.emit("人物属性识别功能已禁用")
@@ -1201,6 +1214,46 @@ class videoProcessingThread(QThread):
             self.attributes_detector = None
         self.camera_log.emit(f"属性识别将使用{'CPU' if use_cpu else 'GPU'}")
 
+    def extract_face_vector_async(self, frame, target_id, bbox):
+        """
+        异步提取人脸向量（每 face_extract_interval 帧执行一次）
+        """
+        # 显式检查属性识别开关
+        if not self.attributes_enabled:
+            return
+
+        # 1. 帧计数器控制
+        self.face_extract_counter += 1
+        if self.face_extract_counter % self.face_extract_interval != 0:
+            return
+
+        # 2. 检查目标是否稳定（已锁定且跟踪稳定）
+        if self.memory_cnt <= 0:
+            return
+
+        # 3. 定义回调函数（在主线程中执行）
+        def on_result(encoded_str):
+            # 直接调用 _on_face_vector_extracted（它会在主线程中执行）
+            self._on_face_vector_extracted(encoded_str)
+
+        # 4. 创建工作线程并提交到线程池
+        worker = FaceVectorWorker(frame, bbox, target_id, on_result)
+        self.thread_pool.start(worker)
+
+    def _on_face_vector_extracted(self, encoded_str):
+        """
+        处理提取完成的人脸向量编码字符串
+        """
+        if encoded_str:
+            # 截断显示避免日志过长，完整字符串可通过信号发送给其他模块
+            self.camera_log.emit(f"人脸向量提取: {encoded_str[:120]}...")
+            # self.camera_log.emit(f"人脸向量提取: {encoded_str}")
+
+            # 如果需要转发给其他模块（如 PLC 线程），可以 emit 另一个信号
+            self.face_vector_extracted.emit(encoded_str)
+        else:
+            self.camera_log.emit("人脸向量提取: 未检测到人脸或提取失败")
+
 
 # ==================== 新增：属性识别工作线程 ====================
 class AttributesAnalysisWorker(QRunnable):
@@ -1248,6 +1301,61 @@ class AttributesAnalysisWorker(QRunnable):
             # 即使出错也调用回调，确保任务计数减少
             if self.callback:
                 self.callback(None, self.bbox)
+
+# ==================== 新增：人脸向量 异步调用 ====================
+class FaceVectorWorker(QRunnable):
+    """
+    人脸向量提取工作线程（异步，不阻塞主线程）
+    使用回调函数返回结果，避免信号/槽的跨线程复杂性和潜在崩溃
+    """
+    def __init__(self, image, bbox, target_id, callback):
+        super().__init__()
+        self.image = image.copy()  # 深拷贝避免竞争
+        self.bbox = bbox
+        self.target_id = target_id
+        self.callback = callback  # 回调函数，接收编码字符串（成功）或空字符串（失败）
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            x1, y1, x2, y2 = map(int, self.bbox)
+            # 取 bbox 上半部分（约 50%）作为人脸候选区域
+            roi_y1 = y1
+            roi_y2 = y1 + int((y2 - y1) * 0.5)
+            roi_x1 = x1
+            roi_x2 = x2
+            h, w = self.image.shape[:2]
+            roi_y1 = max(0, roi_y1)
+            roi_y2 = min(h, roi_y2)
+            roi_x1 = max(0, roi_x1)
+            roi_x2 = min(w, roi_x2)
+            face_roi = self.image[roi_y1:roi_y2, roi_x1:roi_x2]
+
+            if face_roi.size == 0:
+                self.callback("")
+                return
+
+            # 将 BGR 转换为 RGB，因为 face_recognition 期望 RGB 输入
+            rgb_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+
+            # 自动检测人脸并提取编码（不手动传递位置，避免类型问题）
+            face_encodings = face_recognition.face_encodings(rgb_roi)
+            if not face_encodings:
+                self.callback("")
+                return
+
+            face_vector = face_encodings[0]  # 128维 numpy 数组
+            import time
+
+            timestamp = int(time.time())
+            dim = len(face_vector)
+            vector_str = ",".join([f"{v:.6f}" for v in face_vector.tolist()])
+            encoded_str = f"FACE|{self.target_id}|{timestamp}|{dim}|{vector_str}"
+            self.callback(encoded_str)
+
+        except Exception as e:
+            print(f"FaceVectorWorker 错误: {e}")
+            self.callback("")
 
 if __name__ == "__main__":
     video = videoProcessingThread()

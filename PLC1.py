@@ -153,6 +153,11 @@ class plc_thread(QThread):
             '8': 'stand', '9': 'taking_a_selfie', '10': 'walk'
         }
 
+        # ========== 新增：人脸向量数据 ==========
+        self.face_vector_data = None  # 待发送的编码字符串
+        self.face_vector_ready = False  # 是否有新数据
+        # self.face_mutex = QMutex()  # 保护跨线程访问
+
     # ========== 新增：人物属性数据处理方法 ==========
 
     def update_person_attributes(self, attributes_data):
@@ -572,6 +577,29 @@ class plc_thread(QThread):
                             self.tcp_socket = None
                             self.connect_to_server()
             # ------------------------------------------------
+            # ========== 6. 发送人脸向量数据到服务器 ==========
+            # self.face_mutex.lock()
+            if self.face_vector_ready and self.face_vector_data:
+                face_msg = "人脸向量数据: " + self.face_vector_data
+                self.face_vector_ready = False
+                self.face_vector_data = None
+            else:
+                face_msg = None
+            # self.face_mutex.unlock()
+
+            if face_msg:
+                if self.tcp_socket:
+                    try:
+                        self.tcp_socket.send((face_msg + "\n").encode("utf-8"))
+                        self.send_to_txt_browser.emit(
+                            "向语音服务器发送人脸向量数据成功"
+                        )
+                    except Exception as e:
+                        self.send_to_txt_browser.emit(
+                            f"发送人脸向量数据到服务器失败: {e}"
+                        )
+                        self.tcp_socket = None
+                        self.connect_to_server()
 
         except Exception as e:
             self.send_to_txt_browser.emit(f"发送属性数据失败: {e}")
@@ -588,3 +616,15 @@ class plc_thread(QThread):
             self.send_to_txt_browser.emit(f"连接外部服务器失败: {e}")
             self.tcp_socket = None
             return False
+
+    # ========== 新增：接收人脸向量数据 ==========
+    @pyqtSlot(str)
+    def update_face_vector(self, encoded_str):
+        """
+        接收来自视频线程的人脸向量编码字符串
+        线程安全，通过互斥锁保护
+        """
+        # self.face_mutex.lock()
+        self.face_vector_data = encoded_str
+        self.face_vector_ready = True
+        # self.face_mutex.unlock()

@@ -108,6 +108,14 @@ class PersonAttributes:
         else:
             config.disable_gpu()
             config.set_cpu_math_library_num_threads(4)  # 设置CPU线程数
+            # 该 StrongBaseline 模型由旧版 Fluid 导出。Paddle 3.3 的
+            # OneDNN 融合卷积会在首层卷积处丢失 Filter 输入，因此 CPU
+            # 推理必须显式关闭 OneDNN；普通 CPU kernel 可正常执行该模型。
+            if hasattr(config, "disable_onednn"):
+                config.disable_onednn()
+            elif hasattr(config, "disable_mkldnn"):
+                # 兼容仍使用旧 API 名称的 Paddle 版本。
+                config.disable_mkldnn()
 
         config.switch_ir_optim(True)  # 开启图优化
         config.disable_glog_info()  # 关闭冗余日志
@@ -332,12 +340,20 @@ class PersonAttributes:
         output_handle = self.predictor.get_output_handle(output_names[0])
         output_data = output_handle.copy_to_cpu()  # 形状: [1, 26]
 
-        # 6. 提取第一个样本的26个值（去掉批次维度）
-        logits = output_data[0]  # 形状: [26,]
+        if output_data.ndim != 2 or output_data.shape != (1, len(self.LABELS)):
+            raise RuntimeError(
+                f"人物属性模型输出形状异常: {output_data.shape}，"
+                f"期望 (1, {len(self.LABELS)})"
+            )
 
-        # 7. 通过Sigmoid函数将logits转换为概率
-        # 注意：这是多标签分类，每个属性独立，所以用Sigmoid而不是Softmax
-        probs = 1 / (1 + np.exp(-logits))
+        # 模型的唯一输出为 sigmoid_0.tmp_0，本身已经是 [0, 1] 概率。
+        # 不可再次执行 Sigmoid，否则会把置信度压缩到约 0.50～0.73。
+        probs = np.asarray(output_data[0], dtype=np.float32)
+        if not np.all(np.isfinite(probs)):
+            raise RuntimeError("人物属性模型输出包含 NaN 或无穷值")
+        if np.any(probs < -1e-6) or np.any(probs > 1.0 + 1e-6):
+            raise RuntimeError("人物属性模型输出不是有效概率")
+        probs = np.clip(probs, 0.0, 1.0)
 
         # 8. 找出超过阈值的属性
         above_threshold = np.where(probs > self.THRESHOLD)[0].tolist()

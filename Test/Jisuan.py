@@ -191,7 +191,7 @@ for iteration in range(max_iterations):
             # 获取项目信息
             leader_name = project_leaders[proj]
             required_count = project_required_people[proj]
-            remaining_people_count = required_count - 1
+            remaining_people_count = required_count - 1 
 
             # 如果是负责人，不能调整工作比重（已固定）
             if person == leader_name:
@@ -234,7 +234,7 @@ for proj in projects:
     actual_count = len(assignment[proj])
     if actual_count != required_count:
         print(f"  ❌ {proj[:15]}...: 需要{required_count}人，实际{actual_count}人")
-        all_valid = False
+        all_valid = False 
     else:
         print(f"  ✅ {proj[:15]}...: 人员数量正确({actual_count}人)")
 
@@ -243,7 +243,7 @@ print()
 for proj in projects:
     project_total = sum(assignment[proj].values())
     if abs(project_total - 1.0) > 0.001:
-        print(f"  ❌ {proj[:15]}...: 总工作量{project_total:.2f}，不是1.0")
+        print(f"  ❌ {proj[:15]}...: 总工作量{project_total:.2f}，不是1.0·")
         all_valid = False
     else:
         print(f"  ✅ {proj[:15]}...: 总工作量正确(1.0)")
