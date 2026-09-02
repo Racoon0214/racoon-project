@@ -471,6 +471,9 @@ class plc_thread(QThread):
             (15, 7),  # 手提包
             (16, 8),  # 单肩包
             (17, 9),  # 双肩包
+            (23, 10),  # 朝向:前 (Front)
+            (24, 11),  # 朝向:侧 (Side)
+            (25, 12),  # 朝向:后 (Back)
         ]
 
         # 构造发送数组，默认全 -1
@@ -553,7 +556,18 @@ class plc_thread(QThread):
                             detected_attr_names.append("青年")
                     elif orig_idx == 21:  # 小于18岁 -> 少年
                         if bool_array[orig_idx] == 1:
-                            detected_attr_names.append("少年")
+                           `` detected_attr_names.append("少年")
+                    # ---------- 新增：朝向处理 ----------
+                    elif orig_idx == 23:  # Front
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("面向你")
+                    elif orig_idx == 24:  # Side
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("侧向你")
+                    elif orig_idx == 25:  # Back
+                        if bool_array[orig_idx] == 1:
+                            detected_attr_names.append("背向你")
+                    # ---------------------------------
                     else:
                         if bool_array[orig_idx] == 1:
                             detected_attr_names.append(chi_name)

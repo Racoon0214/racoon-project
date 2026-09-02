@@ -941,7 +941,7 @@ class PlatForm(QMainWindow):
                     self.attributes_table.setRowCount(len(labels))  # 重新设为26行
 
                     # 只关注这四个属性（后续可以逐步添加）
-                    target_attributes = ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female', 'Hat', 'Glasses', 'HandBag', 'ShoulderBag', 'Backpack']
+                    target_attributes = ['Age18-60', 'AgeLess18', 'AgeOver60', 'Female', 'Hat', 'Glasses', 'HandBag', 'ShoulderBag', 'Backpack', 'Front', 'Side', 'Back']
 
                     # 设置表格行数
                     row_count = len(labels)
