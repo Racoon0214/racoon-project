@@ -597,7 +597,7 @@ class plc_thread(QThread):
                 face_msg = "人脸向量数据: " + self.face_vector_data
                 self.face_vector_ready = False
                 self.face_vector_data = None
-            else:
+            else:                     
                 face_msg = None
             # self.face_mutex.unlock()
 
