@@ -72,7 +72,7 @@ class videoProcessingThread(QThread):
 
         # 添加丢失恢复计数器 songpeng
         self.target_lost_frames = 0
-        self.max_lost_frames = 10
+        self.max_lost_frames = 60  # 2026-10-16 由25调到60(层级0保守治疗)：遮挡稍长(~2s@30fps)不再立即清锁，减少"无红框空窗"；轨迹本身不丢(track_buffer=100)放宽无害
 
         # 添加CUDA错误计数器
         self.cuda_error_count = 0
@@ -114,10 +114,20 @@ class videoProcessingThread(QThread):
 
         self.running = False
 
+        # 2026-10-16 抗遮挡串人（颜色指纹方案）：locked_target 增加 color_hist 指纹；
+        # 另新增颜色阈值/找回阈值/怀疑计数/怀疑标志，详见下方新增参数。
         self.locked_target = {
             'track_id': None,  # 当前锁定ID
-            'last_bbox': None,  # 上一帧bbox，用于丢失恢复
+            'last_bbox': None,  # 仅存"确认是锁定人"的最后一帧框（不被路人覆盖，修复原 bug②）
+            'color_hist': None,  # 锁定人HSV颜色直方图指纹，用于遮挡后识别原人
         }
+        # 2026-10-16 抗遮挡串人：颜色指纹方案参数
+        self.color_match_thresh = 0.45    # Bhattacharyya颜色距离阈值：<该值判定为同一人（越小越严，现场可微调）
+        self.relock_score_thresh = 0.45   # 2026-10-16 由0.55降到0.45(层级0保守治疗)：A重现时综合分更易过阈值→更易认领回，减少"无红框空窗"；仍受 color_relock_gate(0.55)与 switch_margin(0.15) 约束防同色抢框
+        self.switch_margin = 0.15         # 2026-10-16 迟滞：候选需比当前ID颜色分强出该值才切换，专治同人多track碎片抖动(24/26互跳)
+        self.color_relock_gate = 0.70     # 2026-10-16 微调：由0.55→0.70，颜色门槛更严。挡住A只剩B在画面时，B除非衣服几乎与A同色否则颜色分<0.70被排除，杜绝"absent分支把锁误认领到遮挡者B"(日志现象:遮挡后找回在20/12反复跳、红框有时落到用户身上)。A自己重现颜色分常>0.85照常认领
+        self.suspect_frames = 0           # 颜色突变(怀疑被串人)累计帧
+        self.target_suspect = False       # 当前帧 target_id 指向的人是否被怀疑(颜色不符)=可能串人
 
         self.fps_window_size = 10
         # self.target_id = torch.tensor(0)  # 默认为1
@@ -159,6 +169,9 @@ class videoProcessingThread(QThread):
         self.bbox_center_y = 0
         self.bbox_width = 0
         self.bbox_height = 0
+        # 2026-10-16 高清广角版：EMA 框平滑状态(per-track-id)，抑制静止目标逐帧框抖动(观感层，不改检测/坐标)
+        self.ema_boxes = {}  # track_id -> [cx, cy, w, h]
+        self.ema_alpha = 0.3  # 新帧权重30%/历史70%；静止快速收敛稳定，移动目标滞后~几帧(不会跟丢)
         #此数大于0时，代表有记忆，为0时代表无记忆，大于一定值时不启用可视化界面图片放大函数
         self.memory_cnt = 0
         #保留多少帧的记忆
@@ -208,6 +221,7 @@ class videoProcessingThread(QThread):
         self.face_extract_counter = 0  # 帧计数器，用于控制提取频率
         self.face_extract_interval = 60  # 每3帧提取一次
         self.last_face_extract_time = 0  # 上次提取的时间戳（可选项，用于额外限速）
+        self.face_vector_enabled = False  # 人脸向量采集开关（默认关闭，独立于属性识别开关）
 
     def CamInit(self, device_index):
         self.Cam = Camera(device_index)
@@ -681,66 +695,171 @@ class videoProcessingThread(QThread):
                                 # self.target_signal.emit(2)
                                 continue
 
-                    # ===== 新增：锁定目标恢复逻辑 ====songpeng=20260513
-                    if self.locked_target['track_id'] is not None:
-                        if self.locked_target['track_id'] not in results:
-                            # 增加时间限制：如果丢失超过一定帧数，不再恢复
-                            if self.target_lost_frames > self.max_lost_frames:
-                                self.locked_target['track_id'] = None
-                                self.camera_log.emit("目标丢失过久，停止恢复")
-                                continue
-
-                            best_iou = 0
-                            best_id = None
-
-                            for cur_id, bbox in results.items():
-                                iou = self.compute_iou(bbox, self.locked_target['last_bbox'])
-                                if iou > best_iou:
-                                    best_iou = iou
-                                    best_id = cur_id
-                            if best_iou > 0.6:    # 阈值可调 songpeng
-                                self.locked_target['track_id'] = best_id
-                                self.locked_target['last_bbox'] = results[best_id]
-                                self.target_id = best_id
-                                self.target_lost_frames  = 0
-                            else:
-                                self.target_lost_frames += 1
-                        else:
-                            self.locked_target['last_bbox'] = results[self.locked_target['track_id']]
-                            self.target_lost_frames += 1
-                    else:
+                    # ===== 2026-10-16 重写：锁定目标稳定/找回（颜色指纹抗遮挡串人）=====
+                    # 原逻辑只判断 track_id 是否在 results，OCSort 把锁track关联到路人时失效。
+                    # 新逻辑用"颜色直方图指纹"识别原人：每帧确认锁定人颜色，突变即怀疑；
+                    # 在 results 中按 颜色+位置+尺寸 综合打分找回，破解遮挡串人导致红框换人。
+                    cur_track = self.locked_target['track_id']
+                    if cur_track is None:
+                        # 未锚定：若 target_id 可锚定则锚定并采颜色指纹
                         if self.target_id in results:
                             self.locked_target['track_id'] = self.target_id
                             self.locked_target['last_bbox'] = results[self.target_id]
-                            self.target_lost_frames += 1
+                            self.locked_target['color_hist'] = self.compute_color_hist(frame, results[self.target_id])
+                            self.target_lost_frames = 0
+                            self.suspect_frames = 0
+                            self.target_suspect = False
+                    else:
+                        if cur_track in results:
+                            cur_bbox = results[cur_track]
+                            if self.locked_target['color_hist'] is not None:
+                                d = self.color_dist(self.locked_target['color_hist'],
+                                                    self.compute_color_hist(frame, cur_bbox))
+                                if d < self.color_match_thresh:
+                                    # 颜色一致 → 确认是原锁定人：刷新 last_bbox/指纹，清零计数
+                                    # （仅此处更新 last_bbox，避免被串人污染，修复原 bug②）
+                                    self.locked_target['last_bbox'] = cur_bbox
+                                    self.locked_target['color_hist'] = self.compute_color_hist(frame, cur_bbox)
+                                    self.target_lost_frames = 0
+                                    self.suspect_frames = 0
+                                    self.target_suspect = False
+                                else:
+                                    # 颜色突变 → 怀疑被串人。
+                                    # 2026-10-16 迟滞改进：高频有人从身前穿插时，OCSort 常把同一个人拆成多个 track 碎片
+                                    # (如 24/26 都是 A)。若"颜色一不符就立刻捞最像的候选"会在碎片间来回跳(你观察到的 24↔26)。
+                                    # 改为两档：仅当【当前ID颜色明显差】且【候选明显强于当前】才切换；两者都是同人碎片(分相近)
+                                    # 时不切，保持锁定 ID 稳定。
+                                    cur_color_score = 1.0 - d   # 当前锁定ID的颜色相似度
+                                    best_id, best_score, best_color = self.find_lost_target(frame, results, cur_track)
+                                    if best_score > self.relock_score_thresh and (best_score - cur_color_score) > self.switch_margin:
+                                        # 真正串人(当前被关联到路人，且有明显更像A的候选) → 认领回正确 track
+                                        self.locked_target['track_id'] = best_id
+                                        self.locked_target['last_bbox'] = results[best_id]
+                                        self.locked_target['color_hist'] = self.compute_color_hist(frame, results[best_id])
+                                        self.target_id = best_id
+                                        self.target_lost_frames = 0
+                                        self.suspect_frames = 0
+                                        self.target_suspect = False
+                                        self.camera_log.emit(f"遮挡串人修正：锁目标由 {cur_track} 认领回 {best_id}")
+                                    else:
+                                        # 暂不切换(同人碎片抖动/锁人完全被遮)：不污染指纹/last_bbox，累加计数
+                                        # 每段怀疑只打一条日志：区分"迟滞保持"与"纯怀疑"，便于现场调阈值
+                                        if self.suspect_frames == 0:
+                                            if best_score > self.relock_score_thresh:
+                                                self.camera_log.emit(f"颜色突变(距离={d:.2f})但候选未明显更优，保持当前ID(迟滞)")
+                                            else:
+                                                self.camera_log.emit(f"锁定人颜色突变(距离={d:.2f}，阈值{self.color_match_thresh})，进入怀疑态")
+                                        self.target_lost_frames += 1
+                                        self.suspect_frames += 1
+                                        self.target_suspect = True
+                                        if self.target_lost_frames > self.max_lost_frames:
+                                            self.locked_target['track_id'] = None
+                                            self.locked_target['color_hist'] = None
+                                            self.target_suspect = False
+                                            self.camera_log.emit("目标丢失过久，停止恢复")
+                                            continue
+                            else:
+                                # 指纹为空（首次锚定后异常），直接补采
+                                self.locked_target['last_bbox'] = cur_bbox
+                                self.locked_target['color_hist'] = self.compute_color_hist(frame, cur_bbox)
+                                self.target_lost_frames = 0
+                                self.suspect_frames = 0
+                                self.target_suspect = False
+                        else:
+                            # 当前锁 track 不在 results（真消失，超出 track_buffer 之外）
+                            if self.target_lost_frames > self.max_lost_frames:
+                                self.locked_target['track_id'] = None
+                                self.locked_target['color_hist'] = None
+                                self.target_suspect = False
+                                self.camera_log.emit("目标丢失过久，停止恢复")
+                                continue
+                            else:
+                                # 2026-10-16 微调：absent(锁track完全消失)时若"锁人不可见、只剩遮挡者B在画面"，
+                                # find_lost_target 会只剩B候选→易被误认领成A(红框跳到用户)。故除综合分>阈值外，
+                                # 额外要求候选颜色分"几乎是A"(>0.75)，否则不认领、保持等待(橙框/无红框)等A真正重现。
+                                best_id, best_score, best_color = self.find_lost_target(frame, results, cur_track)
+                                if best_score > self.relock_score_thresh and best_color > 0.75:
+                                    self.locked_target['track_id'] = best_id
+                                    self.locked_target['last_bbox'] = results[best_id]
+                                    self.locked_target['color_hist'] = self.compute_color_hist(frame, results[best_id])
+                                    self.target_id = best_id
+                                    self.target_lost_frames = 0
+                                    self.suspect_frames = 0
+                                    self.target_suspect = False
+                                    self.camera_log.emit(f"遮挡后找回：锁目标认领回 {best_id}")
+                                else:
+                                    self.target_lost_frames += 1
+                                    self.target_suspect = True
 
                     # 找到对应的目标
                     i = 0
                     target_spotted = False
                     for id, bbox in results.items():
+                        # 2026-10-16 高清广角版：per-id EMA 平滑，抑制静止目标逐帧框抖动(观感层，不改检测/坐标)
+                        try:
+                            _x0, _y0, _x1, _y1 = bbox
+                            _rw, _rh = float(_x1 - _x0), float(_y1 - _y0)
+                            _rcx, _rcy = _x0 + _rw / 2.0, _y0 + _rh / 2.0
+                            _e = self.ema_boxes.get(id)
+                            if _e is None:
+                                self.ema_boxes[id] = [_rcx, _rcy, _rw, _rh]
+                            else:
+                                _a = self.ema_alpha
+                                self.ema_boxes[id] = [
+                                    _e[0] + _a * (_rcx - _e[0]),
+                                    _e[1] + _a * (_rcy - _e[1]),
+                                    _e[2] + _a * (_rw  - _e[2]),
+                                    _e[3] + _a * (_rh  - _e[3])]
+                            _e = self.ema_boxes[id]
+                            bbox = (int(round(_e[0] - _e[2] / 2.0)),
+                                    int(round(_e[1] - _e[3] / 2.0)),
+                                    int(round(_e[0] + _e[2] / 2.0)),
+                                    int(round(_e[1] + _e[3] / 2.0)))
+                        except Exception:
+                            pass
                         # 只有目标丢失后才会触发目标寻找
                         try:
                             if id == self.target_id:
-                                target_spotted = True
-                                self.remember_bbox(bbox)  #为图像放大记录数据，这里使cnt变为1
-                                # color = (B, G, R)
-                                color = (0, 0, 255)
-                                thickness = 2
-                                cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])),
-                                    (int(bbox[2]), int(bbox[3])),
-                                    color=color, thickness=thickness)
-                                cv2.putText(frame, f'ID: {id}', (int(bbox[0]), int(bbox[1] - 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)
-                                # cv2.putText(frame,f'ID: {id} BBoxH:{self.bbox_height}px', (int(bbox[0]), int(bbox[1] - 10)),
-                                #     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)  # songpeng 需要删除
-                                # 在外置页面上进行展示
-                                color = (0, 100, 255)
-                                thickness = 2
-                                cv2.rectangle(img, (int(bbox[0]), int(bbox[1])),
-                                    (int(bbox[2]), int(bbox[3])),
-                                    color=color, thickness=thickness)
-
-                                img = self.crop_and_pad_with_gray(img)
+                                if not self.target_suspect:
+                                    # 正常确认态：红框 + 图像放大 + 记录
+                                    target_spotted = True
+                                    self.remember_bbox(bbox)  #为图像放大记录数据，这里使cnt变为1
+                                    # color = (B, G, R)
+                                    color = (0, 0, 255)
+                                    thickness = 2
+                                    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])),
+                                        (int(bbox[2]), int(bbox[3])),
+                                        color=color, thickness=thickness)
+                                    cv2.putText(frame, f'ID: {id}', (int(bbox[0]), int(bbox[1] - 10)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)
+                                    # cv2.putText(frame,f'ID: {id} BBoxH:{self.bbox_height}px', (int(bbox[0]), int(bbox[1] - 10)),
+                                    #     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)  # songpeng 需要删除
+                                    # 在外置页面上进行展示
+                                    color = (0, 100, 255)
+                                    thickness = 2
+                                    cv2.rectangle(img, (int(bbox[0]), int(bbox[1])),
+                                        (int(bbox[2]), int(bbox[3])),
+                                        color=color, thickness=thickness)
+                                    img = self.crop_and_pad_with_gray(img)
+                                else:
+                                    # 2026-10-16 抗遮挡串人：怀疑态（当前 target_id 可能指向路人），
+                                    # 红框不跟随路人，改画锁定人最后确认位置(last_bbox)的橙色虚框提示；
+                                    # 不调用 remember_bbox/crop_and_pad/不发PLC/属性(806/817处已据 target_suspect 跳过)，
+                                    # 防止头部姿态/属性跟随错误的人。
+                                    target_spotted = True
+                                    lb = self.locked_target['last_bbox']
+                                    color = (0, 165, 255)  # 橙色
+                                    thickness = 2
+                                    if lb is not None:
+                                        cv2.rectangle(frame, (int(lb[0]), int(lb[1])),
+                                            (int(lb[2]), int(lb[3])),
+                                            color=color, thickness=thickness)
+                                        cv2.putText(frame, f'ID: {id}?', (int(lb[0]), int(lb[1] - 10)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color=color, thickness=thickness)
+                                        cv2.rectangle(img, (int(lb[0]), int(lb[1])),
+                                            (int(lb[2]), int(lb[3])),
+                                            color=color, thickness=thickness)
+                                    continue
                             else:
                                 # 没找到flag +1，并跳出循环进行后续操作
                                 i += 1
@@ -777,7 +896,9 @@ class videoProcessingThread(QThread):
                         # action_queue.enqueue(item=action_preds)
                         #
                         # 传信函数在这里
-                        self.update_detection_collect(results,preds, detect_num)
+                        # 2026-10-16 抗遮挡串人：怀疑态(target_suspect)时不向PLC发送偏移，避免头姿跟随路人
+                        if not self.target_suspect:
+                            self.update_detection_collect(results,preds, detect_num)
 
                     # ========== 新增：在目标检测后添加属性识别 ==========songpeng
                     # 添加属性识别的日志
@@ -788,7 +909,8 @@ class videoProcessingThread(QThread):
                     #     self.camera_log.emit(
                     #         f"[DEBUG] 当前目标ID {self.target_id} 是否在 results 中: {self.target_id in results}")
 
-                    if detect_num > 0 and self.attributes_enabled and self.target_id  in results:
+                    # 2026-10-16 抗遮挡串人：怀疑态不跑锁定人属性/人脸(此时target_id可能指向路人)
+                    if detect_num > 0 and self.attributes_enabled and self.target_id in results and not self.target_suspect:
                         # self.camera_log.emit(
                         #     f"[属性识别] 检测到 {detect_num} 个人，attributes_enabled={self.attributes_enabled}")
                         bbox = results[self.target_id]
@@ -908,6 +1030,68 @@ class videoProcessingThread(QThread):
         box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
         iou = inter_area / (box1_area + box2_area - inter_area + 1e-6)
         return iou
+
+    # ===== 2026-10-16 抗遮挡串人：颜色指纹相关方法 =====
+
+    def compute_color_hist(self, frame, bbox):
+        """计算人体框的 HSV 颜色直方图指纹（L1归一化），用于识别"是不是同一个人"。
+        裁框 -> BGR2HSV -> 3通道直方图(bins=16) -> 归一化。零神经网络开销。"""
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        crop = frame[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1, 2], None, [16, 16, 16],
+                            [0, 180, 0, 256, 0, 256])
+        # 2026-10-16 修bug：normalize 对 NORM_L1 是"缩放到alpha指定的范数值"，beta不参与；
+        # 之前误传 alpha=0 导致直方图全为0 → compareHist 除零返回 nan → 每帧都误判"颜色突变"，
+        # 陷入 锚定→怀疑→超时清锁→再锚定 死循环(即"完全锁不上人+日志刷屏")。alpha 必须传 1.0。
+        cv2.normalize(hist, hist, 1.0, 0, cv2.NORM_L1)  # 2026-10-16 改：L1归一化到总和=1
+        return hist.flatten()  # 压成1维，保证 cv2.compareHist 兼容性
+
+    def color_dist(self, h1, h2):
+        """Bhattacharyya 距离，0=完全相同，1=完全不同。任一为None返回1.0(完全不同)。"""
+        if h1 is None or h2 is None:
+            return 1.0
+        return float(cv2.compareHist(h1, h2, cv2.HISTCMP_BHATTACHARYYA))
+
+    def find_lost_target(self, frame, results, exclude_id):
+        """在 results 中找"最像锁定人"的 track（颜色为主+位置+尺寸），返回 (best_id, best_score)。
+        exclude_id: 当前被怀疑的 track（不参与比对）。无候选/无指纹返回 (None, 0.0)。"""
+        if self.locked_target['color_hist'] is None or self.locked_target['last_bbox'] is None:
+            return None, 0.0
+        lock_hist = self.locked_target['color_hist']
+        lx1, ly1, lx2, ly2 = self.locked_target['last_bbox']
+        lock_cx, lock_cy = (lx1 + lx2) / 2.0, (ly1 + ly2) / 2.0
+        lock_h = max(1.0, float(ly2 - ly1))
+        best_id, best_score, best_color_score = None, 0.0, 0.0
+        for cid, cb in results.items():
+            if cid == exclude_id:
+                continue
+            ch = self.compute_color_hist(frame, cb)
+            if ch is None:
+                continue
+            color_score = 1.0 - self.color_dist(lock_hist, ch)              # 颜色相似度
+            # 2026-10-16 颜色硬门槛：遮挡者(衣服与锁定人不同)颜色分必低，不过关直接排除，
+            # 杜绝"找回"把锁误切到遮挡者身上(用户实测痛点：挡住A→锁跑到路人→A变蓝框无红框)
+            if color_score < self.color_relock_gate:
+                continue
+            cx = (cb[0] + cb[2]) / 2.0
+            cy = (cb[1] + cb[3]) / 2.0
+            dist = ((cx - lock_cx) ** 2 + (cy - lock_cy) ** 2) ** 0.5
+            pos_score = max(0.0, 1.0 - dist / lock_h)                       # 位置连续性(相对身高归一)
+            cand_h = max(1.0, float(cb[3] - cb[1]))
+            size_score = max(0.0, 1.0 - abs(cand_h - lock_h) / lock_h)      # 尺寸相似度
+            # 2026-10-16 微调：颜色主导(0.7)，削弱位置(0.15→防"遮挡者B站A原位置位置分拉满抢框")，尺寸0.15不变
+            score = 0.7 * color_score + 0.15 * pos_score + 0.15 * size_score
+            if score > best_score:
+                best_score = score
+                best_id = cid
+                best_color_score = color_score
+        return best_id, best_score, best_color_score
 
     #     # ===== 锁定目标接口，用户选择或随机锁定 =====
     #
@@ -1218,6 +1402,10 @@ class videoProcessingThread(QThread):
         """
         异步提取人脸向量（每 face_extract_interval 帧执行一次）
         """
+        # 显式检查人脸向量开关（默认关闭；关闭时只跳过人脸向量采集，不影响属性识别）
+        if not self.face_vector_enabled:
+            return
+
         # 显式检查属性识别开关
         if not self.attributes_enabled:
             return

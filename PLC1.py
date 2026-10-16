@@ -156,6 +156,7 @@ class plc_thread(QThread):
         # ========== 新增：人脸向量数据 ==========
         self.face_vector_data = None  # 待发送的编码字符串
         self.face_vector_ready = False  # 是否有新数据
+        self.face_vector_enabled = False  # 人脸向量发送开关（默认关闭）
         # self.face_mutex = QMutex()  # 保护跨线程访问
 
     # ========== 新增：人物属性数据处理方法 ==========
@@ -303,14 +304,14 @@ class plc_thread(QThread):
                 except ValueError:
                     distance = 50
 
-                # ✨ 新增：获取人物数量（第5个元素）
-                try:
-                    person_count = int(self.visual_plc_data[4])
-                    self.person_count = person_count  # 更新内部状态
-                except (ValueError, IndexError):
-                    person_count = 0
-                    self.person_count = 0
-
+                # # ✨ 新增：获取人物数量（第5个元素）
+                # try:
+                #     person_count = int(self.visual_plc_data[4])
+                #     self.person_count = person_count  # 更新内部状态
+                # except (ValueError, IndexError):
+                #     person_count = 0
+                #     self.person_count = 0
+                person_count = self.person_count
 
                 intdiff_x = int(((diff_x + 450) / 900) * 100)
                 intdiff_y = int(((diff_y + 400) / 800) * 100)
@@ -343,12 +344,12 @@ class plc_thread(QThread):
                 intdiff_y = max(0, min(100, intdiff_y))
 
                 # ========== 2. 发送视觉数据到PLC ==========
-                plc.write_by_name('GVL_TCP.VISION_IDX', int(label), pyads.PLCTYPE_INT)
+                # plc.write_by_name('GVL_TCP.VISION_IDX', int(label), pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_X', intdiff_x, pyads.PLCTYPE_INT)
                 # plc.write_by_name('GVL_TCP.VISION_Y', intdiff_y, pyads.PLCTYPE_INT)
                 plc.write_by_name('GVL_TCP.VISION_Y', distance, pyads.PLCTYPE_INT)
-                plc.write_by_name('GVL_TCP.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
-                plc.write_by_name('GVL_TCP.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
+                # plc.write_by_name('GVL_TCP.VISION_LOCK', self.vision_lock, pyads.PLCTYPE_BOOL)
+                # plc.write_by_name('GVL_TCP.VISION_SWING', 1 if swinging else 0, pyads.PLCTYPE_BOOL)
 
                 # ========== 3. 发送人物属性数据到PLC ==========
                 # 控制发送频率：每N个周期发送一次
@@ -362,7 +363,7 @@ class plc_thread(QThread):
                 # ========== 4. 输出日志 ==========
                 packet = (
                     f"动作:{label}, X:{intdiff_x}, Y:{intdiff_y}, 距离{distance}"
-                    f"人数:{person_count}, 锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
+                    f"人数:{self.person_count}, 锁定:{self.vision_lock}, 晃动:{swinging}, 人数:{self.person_count}"
                 )
 
                 # 如果发送了属性数据，添加到日志
@@ -513,7 +514,7 @@ class plc_thread(QThread):
 
             # plc.write_by_name('GVL_TCP.ATTR_ARRAY', send_array, pyads.PLCTYPE_ARR_INT(26))
             send_array_16 = send_array[:10]  # 取前10个元素
-            plc.write_by_name('GVL_TCP.ATTR_ARRAY', send_array_16, pyads.PLCTYPE_ARR_INT(10))
+            # plc.write_by_name('GVL_TCP.ATTR_ARRAY', send_array_16, pyads.PLCTYPE_ARR_INT(10))
 
             # # 3. 发送识别到的属性数量
             # attr_count = self.person_attributes_data['attributes_count']
@@ -556,7 +557,7 @@ class plc_thread(QThread):
                             detected_attr_names.append("青年")
                     elif orig_idx == 21:  # 小于18岁 -> 少年
                         if bool_array[orig_idx] == 1:
-                           `` detected_attr_names.append("少年")
+                            detected_attr_names.append("少年")
                     # ---------- 新增：朝向处理 ----------
                     elif orig_idx == 23:  # Front
                         if bool_array[orig_idx] == 1:
@@ -593,12 +594,13 @@ class plc_thread(QThread):
             # ------------------------------------------------
             # ========== 6. 发送人脸向量数据到服务器 ==========
             # self.face_mutex.lock()
-            if self.face_vector_ready and self.face_vector_data:
+            if self.face_vector_enabled and self.face_vector_ready and self.face_vector_data:
                 face_msg = "人脸向量数据: " + self.face_vector_data
-                self.face_vector_ready = False
-                self.face_vector_data = None
-            else:                     
+            else:
                 face_msg = None
+            # 无论开关是否开启，都清空暂存数据，避免重新开启时发送陈旧向量
+            self.face_vector_ready = False
+            self.face_vector_data = None
             # self.face_mutex.unlock()
 
             if face_msg:

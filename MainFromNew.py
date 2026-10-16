@@ -105,6 +105,12 @@ class PlatForm(QMainWindow):
         self.attributesButton = self.ui.itemMatchButton  # 重命名以明确用途
         self.attributesButton.setText("开启属性识别")  # 初始文本
         self.attributesButton.clicked.connect(self.toggle_attributes_analysis)
+
+        # 人脸向量开关按钮（复用 TestButton_2，默认关闭，点击一次开启，再次点击关闭）
+        self.faceVectorButton = self.ui.TestButton_2  # 重命名以明确用途
+        self.faceVectorButton.setText("开启人脸向量")  # 初始文本（默认关闭）
+        self.faceVectorButton.clicked.connect(self.toggle_face_vector)
+        self.face_vector_state = False  # 人脸向量功能开关状态（默认关闭）
         self.cpuModeCheckbox = self.ui.cbCPU
         self.cpuModeCheckbox.setChecked(False)
         self.cpuModeCheckbox.stateChanged.connect(self.set_attributes_cpu_mode)
@@ -257,6 +263,9 @@ class PlatForm(QMainWindow):
         self.plcThread = plc_thread('169.254.251.233.1.1', 851)
         # ✨ 连接连接状态信号
         self.plcThread.connection_status.connect(self.on_plc_connection_status)
+
+        # 同步当前人脸向量开关状态到PLC线程（默认关闭；若用户先开开关再连PLC也能生效）
+        self.plcThread.face_vector_enabled = self.face_vector_state
 
         self.plcThread.start()
 
@@ -1241,6 +1250,31 @@ class PlatForm(QMainWindow):
             self.printMessage("人物属性识别功能已关闭")
             # 可选：清空UI显示
             self._clear_attributes_display()
+
+    def toggle_face_vector(self):
+        """切换人脸向量功能开关（点击一次开启，再次点击关闭）"""
+        current_text = self.faceVectorButton.text()
+
+        if current_text == "开启人脸向量":
+            # 执行开启逻辑
+            self.faceVectorButton.setText("关闭人脸向量")
+            self.faceVectorButton.setStyleSheet("background-color: rgb(170, 255, 127);")  # 绿色背景
+            self.set_face_vector_enabled(True)
+            self.printMessage("人脸向量功能已开启")
+        else:
+            # 执行关闭逻辑
+            self.faceVectorButton.setText("开启人脸向量")
+            self.faceVectorButton.setStyleSheet("")  # 恢复默认样式
+            self.set_face_vector_enabled(False)
+            self.printMessage("人脸向量功能已关闭")
+
+    def set_face_vector_enabled(self, enabled):
+        """同步人脸向量开关状态到采集端（videoThread）与发送端（plcThread）"""
+        self.face_vector_state = enabled
+        if hasattr(self, 'videoThread') and self.videoThread is not None:
+            self.videoThread.face_vector_enabled = enabled
+        if hasattr(self, 'plcThread') and self.plcThread is not None:
+            self.plcThread.face_vector_enabled = enabled
 
     def enable_attributes_analysis(self):
         """启用人物属性识别功能"""

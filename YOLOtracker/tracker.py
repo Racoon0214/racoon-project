@@ -40,10 +40,10 @@ class Tracker():
         self.tracker = 'ocsort'
         self.reid_model = 'deepsort'
         self.kalman_format = 'ocsort'
-        self.img_size = 640
+        self.img_size = 1280  # 2026-10-16 高清广角版：640->1280(32倍数)，高清检测，远距小目标(20-30m人形)召回更稳；喂原始帧由ultralytics自身letterbox，不再手工缩放
         self.device = '0'
 
-        self.conf_thresh = 0.5
+        self.conf_thresh = 0.35  # 2026-10-16 高清广角版：0.5->0.35，兜底更远处小目标(与高清方向一致)；锁定目标不受影响
         self.nms_thresh = 0.3
         self.iou_thresh = 0.3
 
@@ -84,70 +84,37 @@ class Tracker():
             results = {}
             ids = []
 
-            # Prepare the image for the detector
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img_resized = cv2.resize(img, (self.img_size, self.img_size))
-            # 尝试推理，如果失败则降级处理
+            # 2026-10-16 高清广角版：坐标链路重构(严谨版)
+            # 不再手工 letterbox/拉伸 + 手动回投(旧方案存在双重letterbox / imgsz元组顺序错位风险)。
+            # 直接把【原始 BGR 帧 frame】交给 YOLO，由 ultralytics 内部自己做 letterbox，
+            # 推理后 results 的框已自动反算回【原图像素坐标】 -> postprocess 返回的即原图坐标，零手动变换。
+            # imgsz 用单个整数(无 h/w 元组顺序歧义)。
+            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # 仅供 OCSort.update 外观特征/可视化，不参与检测预处理
             output = None
 
-            # 添加CUDA错误恢复机制
-            max_retries = 3
-            retry_count = 0
-            use_cpu_fallback = False
-
-            # img_tensor = torch.from_numpy(img_resized).float().to(torch.device('cuda:0')).permute(2, 0, 1).unsqueeze(0) / 255.0 song
-
-            # Get detector output
-            # with torch.no_grad():
-            #     output = self.model_class.predict(img_tensor, conf=self.conf_thresh, iou=self.nms_thresh, classes=0, verbose=False) song
-
-
             try:
-
-                # 尝试使用GPU
-                # 尝试使用GPU
-                if torch.cuda.is_available():
-                    img_tensor = torch.from_numpy(img_resized).float().to(torch.device('cuda:0')).permute(2, 0,
-                                                                                                          1).unsqueeze(
-                        0) / 255.0
-                else:
-                    img_tensor = torch.from_numpy(img_resized).float().to(torch.device('cpu')).permute(2, 0,
-                                                                                                       1).unsqueeze(
-                        0) / 255.0
-
-                # Get detector output
+                device = '0' if torch.cuda.is_available() else 'cpu'
                 with torch.no_grad():
-                    output = self.model_class.predict(img_tensor, conf=self.conf_thresh, iou=self.nms_thresh,
-                                                      classes=0, verbose=False)
+                    # 直接喂原始 BGR 帧；imgsz 显式指定 32 倍数，防止被 ultralytics 缩回默认 640
+                    output = self.model_class.predict(frame, conf=self.conf_thresh, iou=self.nms_thresh,
+                                                      classes=0, verbose=False, imgsz=self.img_size, device=device)
             except RuntimeError as cuda_error:
-                # 如果GPU失败，尝试使用CPU
                 if "CUDA" in str(cuda_error) or "cuda" in str(cuda_error):
-
                     print(f"[Tracker] CUDA错误，尝试清理缓存: {str(cuda_error)[:100]}")
                     if torch.cuda.is_available():
                         try:
                             torch.cuda.empty_cache()
                         except:
                             pass
-
                     print(f"[Tracker] CUDA错误，切换到CPU模式: {str(cuda_error)[:100]}")
-                    # 将模型移动到CPU
                     if hasattr(self.model_class, 'model'):
                         self.model_class.model.to('cpu')
-
-                    # 在CPU上重新处理
-                    img_tensor = torch.from_numpy(img_resized).float().to(torch.device('cpu')).permute(2, 0,
-                                                                                                       1).unsqueeze(
-                        0) / 255.0
-
                     with torch.no_grad():
-                        output = self.model_class.predict(img_tensor, conf=self.conf_thresh, iou=self.nms_thresh,
-                                                          classes=0, verbose=False)
-                else: 
-                    # 非CUDA错误，直接返回空结果
-                    print(f"[Tracker] 非CUDA错误: {str(e)[:100]}")
+                        output = self.model_class.predict(frame, conf=self.conf_thresh, iou=self.nms_thresh,
+                                                          classes=0, verbose=False, imgsz=self.img_size, device='cpu')
+                else:
+                    print(f"[Tracker] 非CUDA错误: {str(cuda_error)[:100]}")
                     return 0, {}, torch.Tensor([])
-
             if output is not None:
                 # Postprocess output to original scales
                 output = postprocess_yolov8(output)                     #output才是bboxes
@@ -183,10 +150,7 @@ class Tracker():
                     cls = trk.category
                     score = trk.score
 
-                    bbox[0] = int(bbox[0] * w / self.img_size)
-                    bbox[1] = int(bbox[1] * h / self.img_size)
-                    bbox[2] = int(bbox[2] * w / self.img_size)
-                    bbox[3] = int(bbox[3] * h / self.img_size)
+                    # 2026-10-16 高清广角版：postprocess 返回的框已是【原图像素坐标】(ultralytics 内部 letterbox 自动反算)，无需任何手动缩放/回投，直接 tlwh->xyxy。
                     # x_center = int(bbox[0] + bbox[2] / 2)
                     # y_center = int(bbox[1] + bbox[3] / 2)
                     # bbox[2]=int(bbox[0] + bbox[2])
